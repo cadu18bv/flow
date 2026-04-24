@@ -31,6 +31,21 @@ warn() {
   printf "\n[WARN] %s\n" "$1"
 }
 
+parse_snmp_integer() {
+  local raw="$1"
+
+  raw="${raw#INTEGER: }"
+  raw="${raw// /}"
+
+  if [[ "${raw}" =~ \(([0-9]+)\) ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return
+  fi
+
+  raw="${raw%%(*}"
+  printf '%s' "${raw}"
+}
+
 log_error_file() {
   local message="$1"
   printf "[%s] %s\n" "$(date '+%F %T')" "${message}" >> "${LOG_DIR}/errors.log"
@@ -376,16 +391,21 @@ generate_tag() {
 discover_and_fill_knownlinks() {
   info "Processando o dump bruto SNMP e preenchendo knownlinks"
 
+  declare -gA IF_INDEXES=()
   declare -gA IF_DESCRS=()
   declare -gA IF_ALIASES=()
-  declare -gA IF_OPER=()
-  declare -gA IF_TYPES=()
   declare -gA USED_TAGS=()
 
   local line index value desc alias color_index tag description
-  local descr_count alias_count oper_count type_count selected_count
+  local index_count descr_count alias_count selected_count
   local preview_file confirm
   [[ -n "${RAW_WALK_FILE}" && -f "${RAW_WALK_FILE}" ]] || fail "Dump bruto SNMP nao encontrado para processar"
+
+  while IFS= read -r line; do
+    [[ "${line}" =~ (IF-MIB::ifIndex|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.1)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    index="${BASH_REMATCH[2]}"
+    IF_INDEXES["${index}"]="${index}"
+  done < "${RAW_WALK_FILE}"
 
   while IFS= read -r line; do
     [[ "${line}" =~ (IF-MIB::ifDescr|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.2)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
@@ -405,39 +425,18 @@ discover_and_fill_knownlinks() {
     value="${BASH_REMATCH[3]}"
     value="${value#STRING: }"
     value="${value#\"}"
-    value="${value%\"}"
-    IF_ALIASES["${index}"]="${value}"
+      value="${value%\"}"
+      IF_ALIASES["${index}"]="${value}"
   done < "${RAW_WALK_FILE}"
-
-  while IFS= read -r line; do
-    [[ "${line}" =~ (IF-MIB::ifOperStatus|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.8)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
-    index="${BASH_REMATCH[2]}"
-    value="${BASH_REMATCH[3]}"
-    value="${value#INTEGER: }"
-    value="${value%%(*}"
-    value="${value// /}"
-    IF_OPER["${index}"]="${value}"
-  done < "${RAW_WALK_FILE}"
-
-  while IFS= read -r line; do
-    [[ "${line}" =~ (IF-MIB::ifType|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.3)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
-    index="${BASH_REMATCH[2]}"
-    value="${BASH_REMATCH[3]}"
-    value="${value#INTEGER: }"
-    value="${value%%(*}"
-    value="${value// /}"
-    IF_TYPES["${index}"]="${value}"
-  done < "${RAW_WALK_FILE}"
-
+ 
+  index_count="${#IF_INDEXES[@]}"
   descr_count="${#IF_DESCRS[@]}"
   alias_count="${#IF_ALIASES[@]}"
-  oper_count="${#IF_OPER[@]}"
-  type_count="${#IF_TYPES[@]}"
 
-  info "Interfaces mapeadas no dump bruto: ifDescr=${descr_count}, ifAlias/ifName=${alias_count}, ifOperStatus=${oper_count}, ifType=${type_count}"
+  info "Interfaces mapeadas no dump bruto: ifIndex=${index_count}, ifDescr=${descr_count}, ifAlias/ifName=${alias_count}"
   {
-    printf '[%s] Resumo do dump bruto para %s: ifDescr=%s ifAlias/ifName=%s ifOperStatus=%s ifType=%s\n' \
-      "$(date '+%F %T')" "${ASSTATS_EXPORTER_HOST}" "${descr_count}" "${alias_count}" "${oper_count}" "${type_count}"
+    printf '[%s] Resumo do dump bruto para %s: ifIndex=%s ifDescr=%s ifAlias/ifName=%s\n' \
+      "$(date '+%F %T')" "${ASSTATS_EXPORTER_HOST}" "${index_count}" "${descr_count}" "${alias_count}"
   } >> "${LOG_DIR}/errors.log"
 
   preview_file="$(mktemp)"
@@ -453,18 +452,8 @@ EOF
   selected_count=0
 
   while IFS= read -r index; do
+    [[ -n "${IF_INDEXES[${index}]:-}" ]] || continue
     [[ -n "${IF_DESCRS[${index}]:-}" ]] || continue
-    case "${IF_TYPES[${index}]:-0}" in
-      6|23|24|53|62|117|127|128|129|135|136|161)
-        ;;
-      *)
-        continue
-        ;;
-    esac
-
-    if [[ -n "${IF_OPER[${index}]:-}" && "${IF_OPER[${index}]}" != "1" ]]; then
-      continue
-    fi
 
     desc="${IF_DESCRS[${index}]}"
     alias="${IF_ALIASES[${index}]:-}"
@@ -481,10 +470,17 @@ EOF
 
     color_index=$((color_index + 1))
     selected_count=$((selected_count + 1))
-  done < <(printf '%s\n' "${!IF_DESCRS[@]}" | sort -n)
+  done < <(printf '%s\n' "${!IF_INDEXES[@]}" | sort -n)
 
   if ! grep -qvE '^\s*#|^\s*$' "${preview_file}"; then
-    log_error_file "Nenhuma interface elegivel encontrada via SNMP. ifDescr=${descr_count} ifAlias/ifName=${alias_count} ifType=${type_count} ifOperStatus=${oper_count}"
+    log_error_file "Nenhuma interface elegivel encontrada via SNMP. ifIndex=${index_count} ifDescr=${descr_count} ifAlias/ifName=${alias_count}"
+    {
+      printf '[%s] Primeiros ifIndex/ifDescr parseados:\n' "$(date '+%F %T')"
+      printf '%s\n' "${!IF_INDEXES[@]}" | sort -n | head -n 15 | while IFS= read -r idx; do
+        printf 'ifIndex=%s ifDescr=%s\n' "${idx}" "${IF_DESCRS[${idx}]:-}"
+      done
+      printf '\n'
+    } >> "${LOG_DIR}/errors.log"
     rm -f "${preview_file}"
     fail "Nenhuma interface elegivel foi encontrada via SNMP para gerar o knownlinks"
   fi
