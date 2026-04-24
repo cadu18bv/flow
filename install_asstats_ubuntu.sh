@@ -21,6 +21,7 @@ ASSTATS_ENABLE_UFW="${ASSTATS_ENABLE_UFW:-yes}"
 ASSTATS_EXPORTER_HOST="${ASSTATS_EXPORTER_HOST:-}"
 ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
 ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-1}"
+RAW_WALK_FILE=""
 
 info() {
   printf "\n[INFO] %s\n" "$1"
@@ -73,6 +74,7 @@ preflight() {
   command -v systemctl >/dev/null 2>&1 || fail "systemctl nao encontrado"
   command -v curl >/dev/null 2>&1 || fail "curl nao encontrado"
   command -v wget >/dev/null 2>&1 || fail "wget nao encontrado"
+  command -v timeout >/dev/null 2>&1 || warn "timeout nao encontrado, o snmpwalk bruto vai depender apenas da resposta do equipamento"
   command -v git >/dev/null 2>&1 || warn "git ainda nao instalado, sera instalado"
 
   local free_kb
@@ -312,6 +314,44 @@ prompt_exporter_config() {
     1.3.6.1.2.1.1.1 >/dev/null || fail "Falha no acesso SNMP ao exportador ${ASSTATS_EXPORTER_HOST}"
 }
 
+validate_snmp_raw_walk() {
+  info "Validando comunicacao SNMP bruta antes de aplicar filtros"
+
+  local raw_sample_file raw_count
+  raw_sample_file="$(mktemp)"
+
+  if command -v timeout >/dev/null 2>&1; then
+    if ! timeout 60 snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" "${ASSTATS_EXPORTER_HOST}" \
+      2>>"${LOG_DIR}/errors.log" | tee "${raw_sample_file}" >/dev/null; then
+      if [[ "${PIPESTATUS[0]:-1}" != "124" ]]; then
+        rm -f "${raw_sample_file}"
+        fail "Falha no snmpwalk bruto contra ${ASSTATS_EXPORTER_HOST}"
+      fi
+    fi
+  elif ! snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" "${ASSTATS_EXPORTER_HOST}" \
+    2>>"${LOG_DIR}/errors.log" | tee "${raw_sample_file}" >/dev/null; then
+    rm -f "${raw_sample_file}"
+    fail "Falha no snmpwalk bruto contra ${ASSTATS_EXPORTER_HOST}"
+  fi
+
+  raw_count="$(grep -cve '^\s*$' "${raw_sample_file}" || true)"
+  if [[ "${raw_count}" == "0" ]]; then
+    rm -f "${raw_sample_file}"
+    fail "O snmpwalk bruto respondeu vazio para ${ASSTATS_EXPORTER_HOST}"
+  fi
+
+  info "SNMP bruto respondeu ${raw_count} linhas"
+  info "Amostra da resposta SNMP bruta:"
+  head -n 10 "${raw_sample_file}"
+  {
+    printf '[%s] Amostra snmpwalk bruto para %s\n' "$(date '+%F %T')" "${ASSTATS_EXPORTER_HOST}"
+    head -n 20 "${raw_sample_file}"
+    printf '\n'
+  } >> "${LOG_DIR}/errors.log"
+
+  RAW_WALK_FILE="${raw_sample_file}"
+}
+
 generate_tag() {
   local source candidate suffix
   source="$1"
@@ -337,7 +377,7 @@ generate_tag() {
 }
 
 discover_and_fill_knownlinks() {
-  info "Descobrindo interfaces ativas via SNMP e preenchendo knownlinks"
+  info "Processando o dump bruto SNMP e preenchendo knownlinks"
 
   declare -gA IF_DESCRS=()
   declare -gA IF_ALIASES=()
@@ -345,58 +385,63 @@ discover_and_fill_knownlinks() {
   declare -gA IF_TYPES=()
   declare -gA USED_TAGS=()
 
-  local oid_ifdescr oid_ifalias oid_ifoper oid_iftype line index value desc alias color_index tag description
+  local line index value desc alias color_index tag description
+  local descr_count alias_count oper_count type_count selected_count
   local preview_file confirm
-  oid_ifdescr="1.3.6.1.2.1.2.2.1.2"
-  oid_ifalias="1.3.6.1.2.1.31.1.1.1.18"
-  oid_ifoper="1.3.6.1.2.1.2.2.1.8"
-  oid_iftype="1.3.6.1.2.1.2.2.1.3"
+  [[ -n "${RAW_WALK_FILE}" && -f "${RAW_WALK_FILE}" ]] || fail "Dump bruto SNMP nao encontrado para processar"
 
   while IFS= read -r line; do
-    [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
-    index="${BASH_REMATCH[1]}"
-    value="${BASH_REMATCH[2]}"
+    [[ "${line}" =~ (IF-MIB::ifDescr|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.2)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    index="${BASH_REMATCH[2]}"
+    value="${BASH_REMATCH[3]}"
     value="${value#STRING: }"
     value="${value#Hex-STRING: }"
     value="${value#INTEGER: }"
     value="${value#\"}"
     value="${value%\"}"
     IF_DESCRS["${index}"]="${value}"
-  done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
-      "${ASSTATS_EXPORTER_HOST}" "${oid_ifdescr}")
+  done < "${RAW_WALK_FILE}"
 
   while IFS= read -r line; do
-    [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
-    index="${BASH_REMATCH[1]}"
-    value="${BASH_REMATCH[2]}"
+    [[ "${line}" =~ (IF-MIB::ifAlias|IF-MIB::ifName|\.1\.3\.6\.1\.2\.1\.31\.1\.1\.1\.18|\.1\.3\.6\.1\.2\.1\.31\.1\.1\.1\.1)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    index="${BASH_REMATCH[2]}"
+    value="${BASH_REMATCH[3]}"
     value="${value#STRING: }"
     value="${value#\"}"
     value="${value%\"}"
     IF_ALIASES["${index}"]="${value}"
-  done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
-      "${ASSTATS_EXPORTER_HOST}" "${oid_ifalias}" 2>/dev/null || true)
+  done < "${RAW_WALK_FILE}"
 
   while IFS= read -r line; do
-    [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
-    index="${BASH_REMATCH[1]}"
-    value="${BASH_REMATCH[2]}"
+    [[ "${line}" =~ (IF-MIB::ifOperStatus|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.8)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    index="${BASH_REMATCH[2]}"
+    value="${BASH_REMATCH[3]}"
     value="${value#INTEGER: }"
     value="${value%%(*}"
     value="${value// /}"
     IF_OPER["${index}"]="${value}"
-  done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
-      "${ASSTATS_EXPORTER_HOST}" "${oid_ifoper}")
+  done < "${RAW_WALK_FILE}"
 
   while IFS= read -r line; do
-    [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
-    index="${BASH_REMATCH[1]}"
-    value="${BASH_REMATCH[2]}"
+    [[ "${line}" =~ (IF-MIB::ifType|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.3)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    index="${BASH_REMATCH[2]}"
+    value="${BASH_REMATCH[3]}"
     value="${value#INTEGER: }"
     value="${value%%(*}"
     value="${value// /}"
     IF_TYPES["${index}"]="${value}"
-  done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
-      "${ASSTATS_EXPORTER_HOST}" "${oid_iftype}")
+  done < "${RAW_WALK_FILE}"
+
+  descr_count="${#IF_DESCRS[@]}"
+  alias_count="${#IF_ALIASES[@]}"
+  oper_count="${#IF_OPER[@]}"
+  type_count="${#IF_TYPES[@]}"
+
+  info "Interfaces mapeadas no dump bruto: ifDescr=${descr_count}, ifAlias/ifName=${alias_count}, ifOperStatus=${oper_count}, ifType=${type_count}"
+  {
+    printf '[%s] Resumo do dump bruto para %s: ifDescr=%s ifAlias/ifName=%s ifOperStatus=%s ifType=%s\n' \
+      "$(date '+%F %T')" "${ASSTATS_EXPORTER_HOST}" "${descr_count}" "${alias_count}" "${oper_count}" "${type_count}"
+  } >> "${LOG_DIR}/errors.log"
 
   preview_file="$(mktemp)"
 
@@ -408,6 +453,7 @@ EOF
   local -a colors
   colors=(1F78B4 33A02C E31A1C FF7F00 6A3D9A A6CEE3 B2DF8A FB9A99 CAB2D6 FDBF6F)
   color_index=0
+  selected_count=0
 
   while IFS= read -r index; do
     [[ -n "${IF_DESCRS[${index}]:-}" ]] || continue
@@ -437,14 +483,16 @@ EOF
       "${ASSTATS_SAMPLING_RATE}" >> "${preview_file}"
 
     color_index=$((color_index + 1))
+    selected_count=$((selected_count + 1))
   done < <(printf '%s\n' "${!IF_DESCRS[@]}" | sort -n)
 
   if ! grep -qvE '^\s*#|^\s*$' "${preview_file}"; then
-    log_error_file "Nenhuma interface elegivel encontrada via SNMP. ifDescr=${#IF_DESCRS[@]} ifType=${#IF_TYPES[@]} ifOperStatus=${#IF_OPER[@]}"
+    log_error_file "Nenhuma interface elegivel encontrada via SNMP. ifDescr=${descr_count} ifAlias/ifName=${alias_count} ifType=${type_count} ifOperStatus=${oper_count}"
     rm -f "${preview_file}"
     fail "Nenhuma interface elegivel foi encontrada via SNMP para gerar o knownlinks"
   fi
 
+  info "Interfaces elegiveis encontradas apos filtro: ${selected_count}"
   info "Interfaces encontradas para o knownlinks:"
   printf "\n"
   awk -F '\t' 'BEGIN { printf "%-16s %-8s %-14s %-40s %-8s %-8s\n", "EXPORTADOR", "IFINDEX", "TAG", "DESCRICAO", "COR", "SAMPLE" }
@@ -483,7 +531,9 @@ configure_web() {
 
 configure_knownlinks() {
   prompt_exporter_config
+  validate_snmp_raw_walk
   discover_and_fill_knownlinks
+  [[ -n "${RAW_WALK_FILE}" && -f "${RAW_WALK_FILE}" ]] && rm -f "${RAW_WALK_FILE}"
 }
 
 install_systemd_units() {
