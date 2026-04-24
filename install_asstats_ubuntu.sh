@@ -634,7 +634,15 @@ run_correctives() {
     grep -q '\$my_asn' "${PROJECT_DIR}/www/config.inc" || warn "Nao encontrei \$my_asn em config.inc"
   fi
 
-  if [[ ! -e "${PROJECT_DIR}/asstats/asstats_day.txt" ]]; then
+  if [[ -f "${PROJECT_DIR}/conf/knownlinks" ]]; then
+    if ! perl "${PROJECT_DIR}/bin/rrd-extractstats.pl" \
+      "${PROJECT_DIR}/rrd" \
+      "${PROJECT_DIR}/conf/knownlinks" \
+      "${PROJECT_DIR}/asstats/asstats_day.txt"; then
+      warn "Nao foi possivel gerar o asstats_day.txt automaticamente neste momento"
+      log_error_file "Falha ao executar rrd-extractstats.pl durante as corretivas"
+    fi
+  elif [[ ! -e "${PROJECT_DIR}/asstats/asstats_day.txt" ]]; then
     touch "${PROJECT_DIR}/asstats/asstats_day.txt"
   fi
 }
