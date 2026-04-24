@@ -23,6 +23,8 @@ ASSTATS_SNMP_VERSION="${ASSTATS_SNMP_VERSION:-2c}"
 ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
 ASSTATS_SNMP_PORT="${ASSTATS_SNMP_PORT:-161}"
 ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-1}"
+ASSTATS_SNMP_TIMEOUT="${ASSTATS_SNMP_TIMEOUT:-3}"
+ASSTATS_SNMP_RETRIES="${ASSTATS_SNMP_RETRIES:-1}"
 
 info() {
   printf "\n[INFO] %s\n" "$1"
@@ -304,13 +306,20 @@ prompt_exporter_config() {
   read -r -p "Porta SNMP [161]: " input_snmp_port
   [[ -n "${input_snmp_port}" ]] && ASSTATS_SNMP_PORT="${input_snmp_port}"
 
+  read -r -p "Timeout SNMP em segundos [3]: " input_snmp_timeout
+  [[ -n "${input_snmp_timeout}" ]] && ASSTATS_SNMP_TIMEOUT="${input_snmp_timeout}"
+
+  read -r -p "Retries SNMP [1]: " input_snmp_retries
+  [[ -n "${input_snmp_retries}" ]] && ASSTATS_SNMP_RETRIES="${input_snmp_retries}"
+
   read -r -p "Sampling rate [1]: " input_sampling
   [[ -n "${input_sampling}" ]] && ASSTATS_SAMPLING_RATE="${input_sampling}"
 
   info "Testando acesso SNMP ao exportador ${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}"
   snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" \
+    -t "${ASSTATS_SNMP_TIMEOUT}" -r "${ASSTATS_SNMP_RETRIES}" \
     "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" \
-    IF-MIB::ifDescr >/dev/null || fail "Falha no acesso SNMP ao exportador"
+    1.3.6.1.2.1.1.1 >/dev/null || fail "Falha no acesso SNMP ao exportador"
 }
 
 generate_tag() {
@@ -361,6 +370,7 @@ discover_and_fill_knownlinks() {
     value="${value%\"}"
     IF_DESCRS["${index}"]="${value}"
   done < <(snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" -On \
+      -t "${ASSTATS_SNMP_TIMEOUT}" -r "${ASSTATS_SNMP_RETRIES}" \
       "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifdescr}")
 
   while IFS= read -r line; do
@@ -372,6 +382,7 @@ discover_and_fill_knownlinks() {
     value="${value%\"}"
     IF_ALIASES["${index}"]="${value}"
   done < <(snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" -On \
+      -t "${ASSTATS_SNMP_TIMEOUT}" -r "${ASSTATS_SNMP_RETRIES}" \
       "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifalias}" 2>/dev/null || true)
 
   while IFS= read -r line; do
@@ -383,6 +394,7 @@ discover_and_fill_knownlinks() {
     value="${value// /}"
     IF_OPER["${index}"]="${value}"
   done < <(snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" -On \
+      -t "${ASSTATS_SNMP_TIMEOUT}" -r "${ASSTATS_SNMP_RETRIES}" \
       "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifoper}")
 
   cat > "${PROJECT_DIR}/conf/knownlinks" <<'EOF'
@@ -449,6 +461,8 @@ ASSTATS_EXPORTER_HOST=${ASSTATS_EXPORTER_HOST}
 ASSTATS_SNMP_VERSION=${ASSTATS_SNMP_VERSION}
 ASSTATS_SNMP_COMMUNITY=${ASSTATS_SNMP_COMMUNITY}
 ASSTATS_SNMP_PORT=${ASSTATS_SNMP_PORT}
+ASSTATS_SNMP_TIMEOUT=${ASSTATS_SNMP_TIMEOUT}
+ASSTATS_SNMP_RETRIES=${ASSTATS_SNMP_RETRIES}
 ASSTATS_SAMPLING_RATE=${ASSTATS_SAMPLING_RATE}
 EOF
 
