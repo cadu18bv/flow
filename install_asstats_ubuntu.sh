@@ -19,9 +19,7 @@ ASSTATS_MY_ASN="${ASSTATS_MY_ASN:-1234}"
 ASSTATS_WEB_ALIAS="${ASSTATS_WEB_ALIAS:-as-stats}"
 ASSTATS_ENABLE_UFW="${ASSTATS_ENABLE_UFW:-yes}"
 ASSTATS_EXPORTER_HOST="${ASSTATS_EXPORTER_HOST:-}"
-ASSTATS_SNMP_VERSION="${ASSTATS_SNMP_VERSION:-2c}"
 ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
-ASSTATS_SNMP_PORT="${ASSTATS_SNMP_PORT:-161}"
 ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-1}"
 
 info() {
@@ -302,18 +300,15 @@ prompt_exporter_config() {
   [[ -n "${input_exporter_host}" ]] && ASSTATS_EXPORTER_HOST="${input_exporter_host}"
   [[ -n "${ASSTATS_EXPORTER_HOST}" ]] || fail "Voce precisa informar o host exportador"
 
-  read -r -p "Versao SNMP [2c]: " input_snmp_version
-  [[ -n "${input_snmp_version}" ]] && ASSTATS_SNMP_VERSION="${input_snmp_version}"
-
   read -r -p "Comunidade SNMP [public]: " input_snmp_community
   [[ -n "${input_snmp_community}" ]] && ASSTATS_SNMP_COMMUNITY="${input_snmp_community}"
 
   read -r -p "Sampling rate [1]: " input_sampling
   [[ -n "${input_sampling}" ]] && ASSTATS_SAMPLING_RATE="${input_sampling}"
 
-  info "Testando acesso SNMP ao exportador ${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}"
+  info "Testando acesso SNMP ao exportador ${ASSTATS_EXPORTER_HOST}"
   snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" \
-    "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" \
+    "${ASSTATS_EXPORTER_HOST}" \
     1.3.6.1.2.1.1.1 >/dev/null || fail "Falha no acesso SNMP ao exportador ${ASSTATS_EXPORTER_HOST}"
 }
 
@@ -366,7 +361,7 @@ discover_and_fill_knownlinks() {
     value="${value%\"}"
     IF_DESCRS["${index}"]="${value}"
   done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
-      "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifdescr}")
+      "${ASSTATS_EXPORTER_HOST}" "${oid_ifdescr}")
 
   while IFS= read -r line; do
     [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
@@ -377,7 +372,7 @@ discover_and_fill_knownlinks() {
     value="${value%\"}"
     IF_ALIASES["${index}"]="${value}"
   done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
-      "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifalias}" 2>/dev/null || true)
+      "${ASSTATS_EXPORTER_HOST}" "${oid_ifalias}" 2>/dev/null || true)
 
   while IFS= read -r line; do
     [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
@@ -388,7 +383,7 @@ discover_and_fill_knownlinks() {
     value="${value// /}"
     IF_OPER["${index}"]="${value}"
   done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
-      "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifoper}")
+      "${ASSTATS_EXPORTER_HOST}" "${oid_ifoper}")
 
   preview_file="$(mktemp)"
 
@@ -476,9 +471,7 @@ ASSTATS_PORT_SFLOW=${ASSTATS_PORT_SFLOW}
 ASSTATS_MY_ASN=${ASSTATS_MY_ASN}
 ASSTATS_PROJECT_DIR=${PROJECT_DIR}
 ASSTATS_EXPORTER_HOST=${ASSTATS_EXPORTER_HOST}
-ASSTATS_SNMP_VERSION=${ASSTATS_SNMP_VERSION}
 ASSTATS_SNMP_COMMUNITY=${ASSTATS_SNMP_COMMUNITY}
-ASSTATS_SNMP_PORT=${ASSTATS_SNMP_PORT}
 ASSTATS_SAMPLING_RATE=${ASSTATS_SAMPLING_RATE}
 EOF
 
