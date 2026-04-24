@@ -490,10 +490,15 @@ EOF
   printf "\n"
   awk -F '\t' 'BEGIN { printf "%-16s %-8s %-14s %-40s %-8s %-8s\n", "EXPORTADOR", "IFINDEX", "TAG", "DESCRICAO", "COR", "SAMPLE" }
     /^[[:space:]]*#/ { next }
-    NF >= 6 { printf "%-16s %-8s %-14s %-40s %-8s %-8s\n", $1, $2, $3, $4, $5, $6 }' "${preview_file}"
+    NF >= 6 { printf "%-16s %-8s %-14s %-40.40s %-8s %-8s\n", $1, $2, $3, $4, $5, $6 }' "${preview_file}"
   printf "\n"
 
-  read -r -p "Confirmar gravacao do knownlinks com essas interfaces? [Y/n]: " confirm
+  printf "Confirmar gravacao do knownlinks com essas interfaces? [Y/n]: "
+  if [[ -r /dev/tty ]]; then
+    read -r confirm < /dev/tty
+  else
+    read -r confirm
+  fi
   confirm="${confirm:-Y}"
 
   case "${confirm}" in
