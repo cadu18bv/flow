@@ -106,7 +106,7 @@ build_package_lists() {
     git unzip wget net-tools curl dnsutils whois build-essential
     perl cpanminus make gcc
     libnet-patricia-perl libjson-xs-perl netcat-openbsd python3-requests
-    libdbd-sqlite3-perl libtrycatch-perl rrdtool librrds-perl librrdp-perl
+    libdbd-sqlite3-perl sqlite3 libtrycatch-perl rrdtool librrds-perl librrdp-perl
     librrdtool-oo-perl python3-rrdtool librrd-dev
     apache2 libapache2-mod-php php php-sqlite3 php-cli php-gmp php-gd
     php-bcmath php-mbstring php-pear php-curl php-xml php-zip libyaml-perl
@@ -661,6 +661,27 @@ verify_installation() {
   [[ -f "${PROJECT_DIR}/conf/knownlinks" ]] || fail "knownlinks nao foi criado"
   [[ -d "${PROJECT_DIR}/rrd" ]] || fail "Diretorio RRD nao foi criado"
   [[ -L "/var/www/html/${ASSTATS_WEB_ALIAS}" ]] || fail "Atalho web nao foi criado"
+  [[ -f "${PROJECT_DIR}/www/plugins/mobile-detect/Mobile_Detect.php" ]] || fail "Dependencia da WebUI ausente: ${PROJECT_DIR}/www/plugins/mobile-detect/Mobile_Detect.php"
+  [[ -f "${PROJECT_DIR}/www/config.inc" ]] || fail "Arquivo ${PROJECT_DIR}/www/config.inc nao encontrado"
+  [[ -f "${PROJECT_DIR}/www/func.inc" ]] || fail "Arquivo ${PROJECT_DIR}/www/func.inc nao encontrado"
+
+  php -m | grep -qi '^sqlite3$' || fail "Modulo PHP sqlite3 nao esta carregado"
+  php -m | grep -qi '^gd$' || fail "Modulo PHP gd nao esta carregado"
+  php -m | grep -qi '^curl$' || fail "Modulo PHP curl nao esta carregado"
+  php -m | grep -qi '^mbstring$' || fail "Modulo PHP mbstring nao esta carregado"
+  php -m | grep -qi '^xml$' || fail "Modulo PHP xml nao esta carregado"
+
+  if [[ -f "${PROJECT_DIR}/asstats/asstats_day.txt" ]]; then
+    if command -v sqlite3 >/dev/null 2>&1; then
+      if ! sqlite3 "${PROJECT_DIR}/asstats/asstats_day.txt" '.tables' | grep -qw 'stats'; then
+        warn "A WebUI oficial espera a tabela 'stats' em ${PROJECT_DIR}/asstats/asstats_day.txt"
+        log_error_file "Tabela stats nao encontrada em ${PROJECT_DIR}/asstats/asstats_day.txt"
+      fi
+    fi
+  else
+    warn "Arquivo ${PROJECT_DIR}/asstats/asstats_day.txt ainda nao existe"
+    log_error_file "Arquivo ${PROJECT_DIR}/asstats/asstats_day.txt nao existe"
+  fi
 }
 
 show_summary() {
@@ -700,6 +721,8 @@ Proximos passos:
 
 Comandos uteis:
   journalctl -u asstatsd.service -n 100 --no-pager
+  tail -n 100 /var/log/apache2/error.log
+  sqlite3 ${PROJECT_DIR}/asstats/asstats_day.txt '.tables'
 EOF
 }
 
