@@ -48,10 +48,7 @@ sudo ASSTATS_PORT_NETFLOW=9000 \
 Ou deixar o script perguntar interativamente:
 
 - IP/hostname do exportador
-- versão SNMP
 - comunidade SNMP
-- porta SNMP
-- sampling rate
 
 ## O que ainda precisa ser ajustado manualmente
 

@@ -305,9 +305,6 @@ prompt_exporter_config() {
   read -r -p "Comunidade SNMP [public]: " input_snmp_community
   [[ -n "${input_snmp_community}" ]] && ASSTATS_SNMP_COMMUNITY="${input_snmp_community}"
 
-  read -r -p "Sampling rate [1]: " input_sampling
-  [[ -n "${input_sampling}" ]] && ASSTATS_SAMPLING_RATE="${input_sampling}"
-
   info "Testando acesso SNMP ao exportador ${ASSTATS_EXPORTER_HOST}"
   snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" \
     "${ASSTATS_EXPORTER_HOST}" \
@@ -474,13 +471,13 @@ EOF
     description="${alias:-${desc}}"
     tag="$(generate_tag "${desc}" "${index}")"
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "${ASSTATS_EXPORTER_HOST}" \
-      "${index}" \
-      "${tag}" \
-      "${description}" \
-      "${colors[$((color_index % ${#colors[@]}))]}" \
-      "${ASSTATS_SAMPLING_RATE}" >> "${preview_file}"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "${ASSTATS_EXPORTER_HOST}" \
+        "${index}" \
+        "${tag}" \
+        "${description}" \
+        "${colors[$((color_index % ${#colors[@]}))]}" \
+        "${ASSTATS_SAMPLING_RATE}" >> "${preview_file}"
 
     color_index=$((color_index + 1))
     selected_count=$((selected_count + 1))
