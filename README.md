@@ -18,6 +18,10 @@ O script [`install_asstats_ubuntu.sh`](C:\Users\Rocha\Documents\Codex\2026-04-24
 - instala os módulos Perl via `cpanm`
 - clona o `AS-Stats` em `/data/asstats`
 - cria `rrd/`, `asstats/` e o `knownlinks`
+- pergunta qual host exporta flow
+- pergunta os dados do `SNMP`
+- consulta automaticamente as interfaces ativas via `snmpwalk`
+- preenche o `knownlinks` automaticamente
 - configura um alias web em `/var/www/html/as-stats`
 - cria `systemd service` para `asstatd.pl`
 - cria `systemd timer` para `rrd-extractstats.pl`
@@ -41,13 +45,29 @@ sudo ASSTATS_PORT_NETFLOW=9000 \
      ./install_asstats_ubuntu.sh
 ```
 
+Ou deixar o script perguntar interativamente:
+
+- IP/hostname do exportador
+- versão SNMP
+- comunidade SNMP
+- porta SNMP
+- sampling rate
+
 ## O que ainda precisa ser ajustado manualmente
 
 O instalador deixa a base pronta, mas estes pontos continuam dependendo do seu ambiente:
 
 ### 1. `knownlinks`
 
-Edite:
+O script agora gera o arquivo automaticamente via `SNMP`, usando:
+
+- `ifDescr`
+- `ifAlias`, quando existir
+- `ifOperStatus`
+
+Ele inclui apenas interfaces ativas no momento da coleta.
+
+Mesmo assim, vale revisar:
 
 ```text
 /data/asstats/conf/knownlinks
@@ -85,13 +105,14 @@ O servidor sozinho não gera gráfico. O roteador precisa enviar:
 - NetFlow v8/v9 AS aggregation para `PORTA 9000/udp`
 - ou sFlow para `6343/udp`
 
-### 4. Descobrir `ifIndex`
+### 4. Descobrir `ifIndex` manualmente, se precisar
 
-Use:
+Se quiser conferir ou refazer:
 
 ```bash
-snmpwalk -v2c -c public IP_DO_ROUTER IF-MIB::ifDescr
-snmpwalk -v2c -c public IP_DO_ROUTER IF-MIB::ifIndex
+snmpwalk -v2c -c SUA_COMMUNITY IP_DO_ROUTER IF-MIB::ifDescr
+snmpwalk -v2c -c SUA_COMMUNITY IP_DO_ROUTER IF-MIB::ifIndex
+snmpwalk -v2c -c SUA_COMMUNITY IP_DO_ROUTER IF-MIB::ifOperStatus
 ```
 
 ## Serviços

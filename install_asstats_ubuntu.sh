@@ -18,6 +18,11 @@ ASSTATS_PORT_SFLOW="${ASSTATS_PORT_SFLOW:-6343}"
 ASSTATS_MY_ASN="${ASSTATS_MY_ASN:-1234}"
 ASSTATS_WEB_ALIAS="${ASSTATS_WEB_ALIAS:-as-stats}"
 ASSTATS_ENABLE_UFW="${ASSTATS_ENABLE_UFW:-yes}"
+ASSTATS_EXPORTER_HOST="${ASSTATS_EXPORTER_HOST:-}"
+ASSTATS_SNMP_VERSION="${ASSTATS_SNMP_VERSION:-2c}"
+ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
+ASSTATS_SNMP_PORT="${ASSTATS_SNMP_PORT:-161}"
+ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-1}"
 
 info() {
   printf "\n[INFO] %s\n" "$1"
@@ -75,6 +80,161 @@ preflight() {
   curl -fsSI https://blog.remontti.com.br/5129 >/dev/null || warn "Sem acesso ao blog do tutorial, mas o instalador pode continuar"
 }
 
+build_package_lists() {
+  REQUIRED_PACKAGES=(
+    git unzip wget net-tools curl dnsutils whois build-essential
+    perl cpanminus make gcc
+    libnet-patricia-perl libjson-xs-perl netcat-openbsd python3-requests
+    libdbd-sqlite3-perl libtrycatch-perl rrdtool librrds-perl librrdp-perl
+    librrdtool-oo-perl python3-rrdtool librrd-dev
+    apache2 libapache2-mod-php php php-sqlite3 php-cli php-gmp php-gd
+    php-bcmath php-mbstring php-pear php-curl php-xml php-zip libyaml-perl
+    snmp snmp-mibs-downloader
+  )
+
+  OPTIONAL_PACKAGES=(
+    rrdcollect
+    python3-rrdtool-dbg
+  )
+}
+
+run_package_corrective() {
+  local pkg="$1"
+  PACKAGE_CORRECTIVE_TARGET=""
+
+  warn "Pacote ausente detectado: ${pkg}. Tentando corretiva automatica..."
+
+  apt-get update || true
+
+  case "${pkg}" in
+    rrdcollect)
+      warn "rrdcollect e opcional e costuma nao existir no Ubuntu ${UBUNTU_VERSION}. Vou seguir sem ele."
+      return 1
+      ;;
+    netcat)
+      if apt-cache show netcat-openbsd >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="netcat-openbsd"
+        return 0
+      fi
+      ;;
+    netcat-openbsd)
+      if apt-cache show netcat-traditional >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="netcat-traditional"
+        return 0
+      fi
+      ;;
+    python3-rrdtool-dbg)
+      warn "python3-rrdtool-dbg e opcional e pode nao existir nesta versao do Ubuntu."
+      return 1
+      ;;
+    php)
+      if apt-cache show php8.3 >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3"
+        return 0
+      fi
+      ;;
+    libapache2-mod-php)
+      if apt-cache show libapache2-mod-php8.3 >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="libapache2-mod-php8.3"
+        return 0
+      fi
+      ;;
+    php-cli)
+      if apt-cache show php8.3-cli >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3-cli"
+        return 0
+      fi
+      ;;
+    php-curl)
+      if apt-cache show php8.3-curl >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3-curl"
+        return 0
+      fi
+      ;;
+    php-gd)
+      if apt-cache show php8.3-gd >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3-gd"
+        return 0
+      fi
+      ;;
+    php-xml)
+      if apt-cache show php8.3-xml >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3-xml"
+        return 0
+      fi
+      ;;
+    php-mbstring)
+      if apt-cache show php8.3-mbstring >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3-mbstring"
+        return 0
+      fi
+      ;;
+    php-sqlite3)
+      if apt-cache show php8.3-sqlite3 >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3-sqlite3"
+        return 0
+      fi
+      ;;
+    php-bcmath)
+      if apt-cache show php8.3-bcmath >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3-bcmath"
+        return 0
+      fi
+      ;;
+    php-gmp)
+      if apt-cache show php8.3-gmp >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3-gmp"
+        return 0
+      fi
+      ;;
+    php-zip)
+      if apt-cache show php8.3-zip >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3-zip"
+        return 0
+      fi
+      ;;
+    php-pear)
+      if apt-cache show php-pear >/dev/null 2>&1; then
+        return 0
+      fi
+      ;;
+  esac
+
+  return 1
+}
+
+filter_installable_packages() {
+  INSTALL_PACKAGES=()
+  SKIPPED_PACKAGES=()
+
+  local pkg
+  for pkg in "${REQUIRED_PACKAGES[@]}"; do
+    if apt-cache show "${pkg}" >/dev/null 2>&1; then
+      INSTALL_PACKAGES+=("${pkg}")
+    else
+      if run_package_corrective "${pkg}"; then
+        if [[ -n "${PACKAGE_CORRECTIVE_TARGET:-}" ]] && apt-cache show "${PACKAGE_CORRECTIVE_TARGET}" >/dev/null 2>&1; then
+          INSTALL_PACKAGES+=("${PACKAGE_CORRECTIVE_TARGET}")
+        elif apt-cache show "${pkg}" >/dev/null 2>&1; then
+          INSTALL_PACKAGES+=("${pkg}")
+        else
+          fail "Corretiva executada, mas o pacote ainda nao ficou disponivel: ${pkg}"
+        fi
+      else
+        fail "Pacote obrigatorio nao encontrado no Ubuntu detectado e sem corretiva valida: ${pkg}"
+      fi
+    fi
+  done
+
+  for pkg in "${OPTIONAL_PACKAGES[@]}"; do
+    if apt-cache show "${pkg}" >/dev/null 2>&1; then
+      INSTALL_PACKAGES+=("${pkg}")
+    else
+      SKIPPED_PACKAGES+=("${pkg}")
+    fi
+  done
+}
+
 configure_repos() {
   info "Atualizando APT e habilitando universe/multiverse"
   apt-get update
@@ -86,15 +246,14 @@ configure_repos() {
 
 install_packages() {
   info "Instalando pacotes do sistema"
-  apt-get install -y \
-    git unzip wget net-tools curl dnsutils whois build-essential \
-    perl cpanminus make gcc \
-    libnet-patricia-perl libjson-xs-perl netcat-openbsd python3-requests \
-    libdbd-sqlite3-perl libtrycatch-perl rrdtool librrds-perl librrdp-perl \
-    librrdtool-oo-perl python3-rrdtool librrd-dev rrdcollect \
-    apache2 libapache2-mod-php php php-sqlite3 php-cli php-gmp php-gd \
-    php-bcmath php-mbstring php-pear php-curl php-xml php-zip libyaml-perl \
-    snmp snmp-mibs-downloader
+  build_package_lists
+  filter_installable_packages
+
+  if (( ${#SKIPPED_PACKAGES[@]} > 0 )); then
+    warn "Pacotes opcionais nao encontrados e ignorados: ${SKIPPED_PACKAGES[*]}"
+  fi
+
+  apt-get install -y "${INSTALL_PACKAGES[@]}"
 }
 
 install_perl_modules() {
@@ -129,6 +288,137 @@ configure_snmp() {
   : > /etc/snmp/snmp.conf
 }
 
+prompt_exporter_config() {
+  info "Configurando descoberta automatica do exportador via SNMP"
+
+  read -r -p "IP ou hostname do equipamento que exporta flow: " input_exporter_host
+  [[ -n "${input_exporter_host}" ]] && ASSTATS_EXPORTER_HOST="${input_exporter_host}"
+  [[ -n "${ASSTATS_EXPORTER_HOST}" ]] || fail "Voce precisa informar o host exportador"
+
+  read -r -p "Versao SNMP [2c]: " input_snmp_version
+  [[ -n "${input_snmp_version}" ]] && ASSTATS_SNMP_VERSION="${input_snmp_version}"
+
+  read -r -p "Comunidade SNMP [public]: " input_snmp_community
+  [[ -n "${input_snmp_community}" ]] && ASSTATS_SNMP_COMMUNITY="${input_snmp_community}"
+
+  read -r -p "Porta SNMP [161]: " input_snmp_port
+  [[ -n "${input_snmp_port}" ]] && ASSTATS_SNMP_PORT="${input_snmp_port}"
+
+  read -r -p "Sampling rate [1]: " input_sampling
+  [[ -n "${input_sampling}" ]] && ASSTATS_SAMPLING_RATE="${input_sampling}"
+
+  info "Testando acesso SNMP ao exportador ${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}"
+  snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" \
+    "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" \
+    IF-MIB::ifDescr >/dev/null || fail "Falha no acesso SNMP ao exportador"
+}
+
+generate_tag() {
+  local source candidate suffix
+  source="$1"
+  candidate="$(printf '%s' "${source}" | tr -c '[:alnum:]' '_' | sed 's/^_*//; s/_*$//; s/__*/_/g' | cut -c1-12)"
+  [[ -n "${candidate}" ]] || candidate="if${2}"
+
+  if [[ -z "${USED_TAGS[${candidate}]:-}" ]]; then
+    USED_TAGS["${candidate}"]=1
+    printf '%s' "${candidate}"
+    return
+  fi
+
+  suffix=1
+  while :; do
+    candidate="$(printf '%.10s%02d' "$(printf '%s' "${source}" | tr -c '[:alnum:]' '_' | sed 's/^_*//; s/_*$//; s/__*/_/g')" "${suffix}")"
+    if [[ -z "${USED_TAGS[${candidate}]:-}" ]]; then
+      USED_TAGS["${candidate}"]=1
+      printf '%s' "${candidate}"
+      return
+    fi
+    suffix=$((suffix + 1))
+  done
+}
+
+discover_and_fill_knownlinks() {
+  info "Descobrindo interfaces ativas via SNMP e preenchendo knownlinks"
+
+  declare -gA IF_DESCRS=()
+  declare -gA IF_ALIASES=()
+  declare -gA IF_OPER=()
+  declare -gA USED_TAGS=()
+
+  local oid_ifdescr oid_ifalias oid_ifoper line index value desc alias color_index tag description
+  oid_ifdescr="1.3.6.1.2.1.2.2.1.2"
+  oid_ifalias="1.3.6.1.2.1.31.1.1.1.18"
+  oid_ifoper="1.3.6.1.2.1.2.2.1.8"
+
+  while IFS= read -r line; do
+    [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    index="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    value="${value#STRING: }"
+    value="${value#Hex-STRING: }"
+    value="${value#INTEGER: }"
+    value="${value#\"}"
+    value="${value%\"}"
+    IF_DESCRS["${index}"]="${value}"
+  done < <(snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" -On \
+      "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifdescr}")
+
+  while IFS= read -r line; do
+    [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    index="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    value="${value#STRING: }"
+    value="${value#\"}"
+    value="${value%\"}"
+    IF_ALIASES["${index}"]="${value}"
+  done < <(snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" -On \
+      "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifalias}" 2>/dev/null || true)
+
+  while IFS= read -r line; do
+    [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    index="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    value="${value#INTEGER: }"
+    value="${value%%(*}"
+    value="${value// /}"
+    IF_OPER["${index}"]="${value}"
+  done < <(snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" -On \
+      "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifoper}")
+
+  cat > "${PROJECT_DIR}/conf/knownlinks" <<'EOF'
+# IP_DO_EXPORTADOR<TAB>IFINDEX<TAB>TAG<TAB>DESCRICAO<TAB>CORHEX<TAB>SAMPLING
+# Gerado automaticamente pelo instalador
+EOF
+
+  local -a colors
+  colors=(1F78B4 33A02C E31A1C FF7F00 6A3D9A A6CEE3 B2DF8A FB9A99 CAB2D6 FDBF6F)
+  color_index=0
+
+  while IFS= read -r index; do
+    [[ -n "${IF_DESCRS[${index}]:-}" ]] || continue
+    [[ "${IF_OPER[${index}]:-2}" == "1" ]] || continue
+
+    desc="${IF_DESCRS[${index}]}"
+    alias="${IF_ALIASES[${index}]:-}"
+    description="${alias:-${desc}}"
+    tag="$(generate_tag "${desc}" "${index}")"
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "${ASSTATS_EXPORTER_HOST}" \
+      "${index}" \
+      "${tag}" \
+      "${description}" \
+      "${colors[$((color_index % ${#colors[@]}))]}" \
+      "${ASSTATS_SAMPLING_RATE}" >> "${PROJECT_DIR}/conf/knownlinks"
+
+    color_index=$((color_index + 1))
+  done < <(printf '%s\n' "${!IF_DESCRS[@]}" | sort -n)
+
+  if ! grep -qvE '^\s*#|^\s*$' "${PROJECT_DIR}/conf/knownlinks"; then
+    fail "Nenhuma interface ativa foi encontrada via SNMP para gerar o knownlinks"
+  fi
+}
+
 configure_web() {
   info "Configurando acesso web"
   ln -sfn "${PROJECT_DIR}/www" "/var/www/html/${ASSTATS_WEB_ALIAS}"
@@ -143,14 +433,8 @@ configure_web() {
 }
 
 configure_knownlinks() {
-  info "Criando arquivo conhecido de links"
-  if [[ ! -f "${PROJECT_DIR}/conf/knownlinks" ]]; then
-    cat > "${PROJECT_DIR}/conf/knownlinks" <<'EOF'
-# IP_DO_EXPORTADOR<TAB>IFINDEX<TAB>TAG<TAB>DESCRICAO<TAB>CORHEX<TAB>SAMPLING
-# Exemplo:
-# 10.20.30.2	6	uplink01	Uplink Principal	1F78B4	1
-EOF
-  fi
+  prompt_exporter_config
+  discover_and_fill_knownlinks
 }
 
 install_systemd_units() {
@@ -161,6 +445,11 @@ ASSTATS_PORT_NETFLOW=${ASSTATS_PORT_NETFLOW}
 ASSTATS_PORT_SFLOW=${ASSTATS_PORT_SFLOW}
 ASSTATS_MY_ASN=${ASSTATS_MY_ASN}
 ASSTATS_PROJECT_DIR=${PROJECT_DIR}
+ASSTATS_EXPORTER_HOST=${ASSTATS_EXPORTER_HOST}
+ASSTATS_SNMP_VERSION=${ASSTATS_SNMP_VERSION}
+ASSTATS_SNMP_COMMUNITY=${ASSTATS_SNMP_COMMUNITY}
+ASSTATS_SNMP_PORT=${ASSTATS_SNMP_PORT}
+ASSTATS_SAMPLING_RATE=${ASSTATS_SAMPLING_RATE}
 EOF
 
   cat > /usr/local/bin/asstatsd-wrapper.sh <<'EOF'
@@ -233,7 +522,11 @@ WantedBy=timers.target
 EOF
 
   systemctl daemon-reload
-  systemctl enable --now asstatsd.service
+  if grep -qvE '^\s*#|^\s*$' "${PROJECT_DIR}/conf/knownlinks"; then
+    systemctl enable --now asstatsd.service
+  else
+    warn "knownlinks sem interfaces validas. O servico asstatsd nao sera iniciado automaticamente."
+  fi
   systemctl enable --now asstats-extract.timer
 }
 
@@ -299,16 +592,15 @@ Servicos:
 
 Proximos passos:
 1. Edite ${PROJECT_DIR}/conf/knownlinks com IP, ifIndex, tag, descricao, cor e sampling.
-2. Ajuste o ASN local em ${PROJECT_DIR}/www/config.inc se necessario.
-3. Configure o roteador para exportar NetFlow v8/v9 AS ou sFlow para este servidor.
-4. Rode manualmente:
+2. Revise o arquivo ${PROJECT_DIR}/conf/knownlinks e ajuste se necessario.
+3. Ajuste o ASN local em ${PROJECT_DIR}/www/config.inc se necessario.
+4. Configure o roteador para exportar NetFlow v8/v9 AS ou sFlow para este servidor.
+5. Rode manualmente:
    perl ${PROJECT_DIR}/bin/rrd-extractstats.pl ${PROJECT_DIR}/rrd ${PROJECT_DIR}/conf/knownlinks ${PROJECT_DIR}/asstats/asstats_day.txt
-5. Acesse:
+6. Acesse:
    http://IP_DO_SERVIDOR/${ASSTATS_WEB_ALIAS}
 
 Comandos uteis:
-  snmpwalk -v2c -c public IP_DO_ROUTER IF-MIB::ifDescr
-  snmpwalk -v2c -c public IP_DO_ROUTER IF-MIB::ifIndex
   journalctl -u asstatsd.service -n 100 --no-pager
 EOF
 }
