@@ -23,8 +23,6 @@ ASSTATS_SNMP_VERSION="${ASSTATS_SNMP_VERSION:-2c}"
 ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
 ASSTATS_SNMP_PORT="${ASSTATS_SNMP_PORT:-161}"
 ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-1}"
-ASSTATS_SNMP_TIMEOUT="${ASSTATS_SNMP_TIMEOUT:-3}"
-ASSTATS_SNMP_RETRIES="${ASSTATS_SNMP_RETRIES:-1}"
 
 info() {
   printf "\n[INFO] %s\n" "$1"
@@ -34,8 +32,14 @@ warn() {
   printf "\n[WARN] %s\n" "$1"
 }
 
+log_error_file() {
+  local message="$1"
+  printf "[%s] %s\n" "$(date '+%F %T')" "${message}" >> "${LOG_DIR}/errors.log"
+}
+
 fail() {
   printf "\n[ERRO] %s\n" "$1" >&2
+  log_error_file "$1"
   exit 1
 }
 
@@ -253,6 +257,7 @@ install_packages() {
 
   if (( ${#SKIPPED_PACKAGES[@]} > 0 )); then
     warn "Pacotes opcionais nao encontrados e ignorados: ${SKIPPED_PACKAGES[*]}"
+    log_error_file "Pacotes opcionais ignorados: ${SKIPPED_PACKAGES[*]}"
   fi
 
   apt-get install -y "${INSTALL_PACKAGES[@]}"
@@ -303,23 +308,13 @@ prompt_exporter_config() {
   read -r -p "Comunidade SNMP [public]: " input_snmp_community
   [[ -n "${input_snmp_community}" ]] && ASSTATS_SNMP_COMMUNITY="${input_snmp_community}"
 
-  read -r -p "Porta SNMP [161]: " input_snmp_port
-  [[ -n "${input_snmp_port}" ]] && ASSTATS_SNMP_PORT="${input_snmp_port}"
-
-  read -r -p "Timeout SNMP em segundos [3]: " input_snmp_timeout
-  [[ -n "${input_snmp_timeout}" ]] && ASSTATS_SNMP_TIMEOUT="${input_snmp_timeout}"
-
-  read -r -p "Retries SNMP [1]: " input_snmp_retries
-  [[ -n "${input_snmp_retries}" ]] && ASSTATS_SNMP_RETRIES="${input_snmp_retries}"
-
   read -r -p "Sampling rate [1]: " input_sampling
   [[ -n "${input_sampling}" ]] && ASSTATS_SAMPLING_RATE="${input_sampling}"
 
   info "Testando acesso SNMP ao exportador ${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}"
-  snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" \
-    -t "${ASSTATS_SNMP_TIMEOUT}" -r "${ASSTATS_SNMP_RETRIES}" \
+  snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" \
     "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" \
-    1.3.6.1.2.1.1.1 >/dev/null || fail "Falha no acesso SNMP ao exportador"
+    1.3.6.1.2.1.1.1 >/dev/null || fail "Falha no acesso SNMP ao exportador ${ASSTATS_EXPORTER_HOST}"
 }
 
 generate_tag() {
@@ -355,6 +350,7 @@ discover_and_fill_knownlinks() {
   declare -gA USED_TAGS=()
 
   local oid_ifdescr oid_ifalias oid_ifoper line index value desc alias color_index tag description
+  local preview_file confirm
   oid_ifdescr="1.3.6.1.2.1.2.2.1.2"
   oid_ifalias="1.3.6.1.2.1.31.1.1.1.18"
   oid_ifoper="1.3.6.1.2.1.2.2.1.8"
@@ -369,8 +365,7 @@ discover_and_fill_knownlinks() {
     value="${value#\"}"
     value="${value%\"}"
     IF_DESCRS["${index}"]="${value}"
-  done < <(snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" -On \
-      -t "${ASSTATS_SNMP_TIMEOUT}" -r "${ASSTATS_SNMP_RETRIES}" \
+  done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
       "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifdescr}")
 
   while IFS= read -r line; do
@@ -381,8 +376,7 @@ discover_and_fill_knownlinks() {
     value="${value#\"}"
     value="${value%\"}"
     IF_ALIASES["${index}"]="${value}"
-  done < <(snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" -On \
-      -t "${ASSTATS_SNMP_TIMEOUT}" -r "${ASSTATS_SNMP_RETRIES}" \
+  done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
       "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifalias}" 2>/dev/null || true)
 
   while IFS= read -r line; do
@@ -393,11 +387,12 @@ discover_and_fill_knownlinks() {
     value="${value%%(*}"
     value="${value// /}"
     IF_OPER["${index}"]="${value}"
-  done < <(snmpwalk -v "${ASSTATS_SNMP_VERSION}" -c "${ASSTATS_SNMP_COMMUNITY}" -On \
-      -t "${ASSTATS_SNMP_TIMEOUT}" -r "${ASSTATS_SNMP_RETRIES}" \
+  done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
       "${ASSTATS_EXPORTER_HOST}:${ASSTATS_SNMP_PORT}" "${oid_ifoper}")
 
-  cat > "${PROJECT_DIR}/conf/knownlinks" <<'EOF'
+  preview_file="$(mktemp)"
+
+  cat > "${preview_file}" <<'EOF'
 # IP_DO_EXPORTADOR<TAB>IFINDEX<TAB>TAG<TAB>DESCRICAO<TAB>CORHEX<TAB>SAMPLING
 # Gerado automaticamente pelo instalador
 EOF
@@ -421,14 +416,37 @@ EOF
       "${tag}" \
       "${description}" \
       "${colors[$((color_index % ${#colors[@]}))]}" \
-      "${ASSTATS_SAMPLING_RATE}" >> "${PROJECT_DIR}/conf/knownlinks"
+      "${ASSTATS_SAMPLING_RATE}" >> "${preview_file}"
 
     color_index=$((color_index + 1))
   done < <(printf '%s\n' "${!IF_DESCRS[@]}" | sort -n)
 
-  if ! grep -qvE '^\s*#|^\s*$' "${PROJECT_DIR}/conf/knownlinks"; then
+  if ! grep -qvE '^\s*#|^\s*$' "${preview_file}"; then
+    rm -f "${preview_file}"
     fail "Nenhuma interface ativa foi encontrada via SNMP para gerar o knownlinks"
   fi
+
+  info "Interfaces encontradas para o knownlinks:"
+  printf "\n"
+  awk -F '\t' 'BEGIN { printf "%-16s %-8s %-14s %-40s %-8s %-8s\n", "EXPORTADOR", "IFINDEX", "TAG", "DESCRICAO", "COR", "SAMPLE" }
+    /^[[:space:]]*#/ { next }
+    NF >= 6 { printf "%-16s %-8s %-14s %-40s %-8s %-8s\n", $1, $2, $3, $4, $5, $6 }' "${preview_file}"
+  printf "\n"
+
+  read -r -p "Confirmar gravacao do knownlinks com essas interfaces? [Y/n]: " confirm
+  confirm="${confirm:-Y}"
+
+  case "${confirm}" in
+    Y|y|yes|YES)
+      mv "${preview_file}" "${PROJECT_DIR}/conf/knownlinks"
+      ;;
+    *)
+      rm -f "${preview_file}"
+      fail "Gravacao do knownlinks cancelada pelo usuario"
+      ;;
+  esac
+
+  info "knownlinks gerado automaticamente com $(grep -cvE '^\s*#|^\s*$' "${PROJECT_DIR}/conf/knownlinks") interfaces"
 }
 
 configure_web() {
@@ -461,8 +479,6 @@ ASSTATS_EXPORTER_HOST=${ASSTATS_EXPORTER_HOST}
 ASSTATS_SNMP_VERSION=${ASSTATS_SNMP_VERSION}
 ASSTATS_SNMP_COMMUNITY=${ASSTATS_SNMP_COMMUNITY}
 ASSTATS_SNMP_PORT=${ASSTATS_SNMP_PORT}
-ASSTATS_SNMP_TIMEOUT=${ASSTATS_SNMP_TIMEOUT}
-ASSTATS_SNMP_RETRIES=${ASSTATS_SNMP_RETRIES}
 ASSTATS_SAMPLING_RATE=${ASSTATS_SAMPLING_RATE}
 EOF
 
