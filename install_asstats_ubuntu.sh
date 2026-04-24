@@ -342,13 +342,15 @@ discover_and_fill_knownlinks() {
   declare -gA IF_DESCRS=()
   declare -gA IF_ALIASES=()
   declare -gA IF_OPER=()
+  declare -gA IF_TYPES=()
   declare -gA USED_TAGS=()
 
-  local oid_ifdescr oid_ifalias oid_ifoper line index value desc alias color_index tag description
+  local oid_ifdescr oid_ifalias oid_ifoper oid_iftype line index value desc alias color_index tag description
   local preview_file confirm
   oid_ifdescr="1.3.6.1.2.1.2.2.1.2"
   oid_ifalias="1.3.6.1.2.1.31.1.1.1.18"
   oid_ifoper="1.3.6.1.2.1.2.2.1.8"
+  oid_iftype="1.3.6.1.2.1.2.2.1.3"
 
   while IFS= read -r line; do
     [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
@@ -385,6 +387,17 @@ discover_and_fill_knownlinks() {
   done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
       "${ASSTATS_EXPORTER_HOST}" "${oid_ifoper}")
 
+  while IFS= read -r line; do
+    [[ "${line}" =~ \.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    index="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    value="${value#INTEGER: }"
+    value="${value%%(*}"
+    value="${value// /}"
+    IF_TYPES["${index}"]="${value}"
+  done < <(snmpwalk -v2c -c "${ASSTATS_SNMP_COMMUNITY}" -On \
+      "${ASSTATS_EXPORTER_HOST}" "${oid_iftype}")
+
   preview_file="$(mktemp)"
 
   cat > "${preview_file}" <<'EOF'
@@ -398,7 +411,17 @@ EOF
 
   while IFS= read -r index; do
     [[ -n "${IF_DESCRS[${index}]:-}" ]] || continue
-    [[ "${IF_OPER[${index}]:-2}" == "1" ]] || continue
+    case "${IF_TYPES[${index}]:-0}" in
+      6|23|24|53|62|117|127|128|129|135|136|161)
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    if [[ -n "${IF_OPER[${index}]:-}" && "${IF_OPER[${index}]}" != "1" ]]; then
+      continue
+    fi
 
     desc="${IF_DESCRS[${index}]}"
     alias="${IF_ALIASES[${index}]:-}"
@@ -417,8 +440,9 @@ EOF
   done < <(printf '%s\n' "${!IF_DESCRS[@]}" | sort -n)
 
   if ! grep -qvE '^\s*#|^\s*$' "${preview_file}"; then
+    log_error_file "Nenhuma interface elegivel encontrada via SNMP. ifDescr=${#IF_DESCRS[@]} ifType=${#IF_TYPES[@]} ifOperStatus=${#IF_OPER[@]}"
     rm -f "${preview_file}"
-    fail "Nenhuma interface ativa foi encontrada via SNMP para gerar o knownlinks"
+    fail "Nenhuma interface elegivel foi encontrada via SNMP para gerar o knownlinks"
   fi
 
   info "Interfaces encontradas para o knownlinks:"
