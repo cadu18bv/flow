@@ -427,10 +427,12 @@ patch_graphs() {
 apply_flow_templates() {
   require_file "${TEMPLATE_DIR}"
   require_file "${TEMPLATE_DIR}/custom.css"
+  require_file "${TEMPLATE_DIR}/flow_db.php"
   require_file "${TEMPLATE_DIR}/flow_ui.php"
 
   install -m 0644 "${TEMPLATE_DIR}/custom.css" "${WWW_DIR}/css/custom.css"
   install -m 0644 "${TEMPLATE_DIR}/auth.php" "${WWW_DIR}/auth.php"
+  install -m 0644 "${TEMPLATE_DIR}/flow_db.php" "${WWW_DIR}/flow_db.php"
   install -m 0644 "${TEMPLATE_DIR}/flow_ui.php" "${WWW_DIR}/flow_ui.php"
   install -m 0644 "${TEMPLATE_DIR}/dashboard.php" "${WWW_DIR}/dashboard.php"
   install -m 0644 "${TEMPLATE_DIR}/ddos.php" "${WWW_DIR}/ddos.php"
@@ -494,6 +496,11 @@ KNOWNLINKS="${ASSTATS_PROJECT_DIR}/conf/knownlinks"
 RRD_DIR="${ASSTATS_PROJECT_DIR}/rrd"
 
 [[ -f "${KNOWNLINKS}" ]] || { echo "Arquivo knownlinks nao encontrado: ${KNOWNLINKS}" >&2; exit 1; }
+
+export ASSTATS_FLOW_BACKEND="${ASSTATS_FLOW_BACKEND:-sqlite}"
+export ASSTATS_FLOW_DSN="${ASSTATS_FLOW_DSN:-}"
+export ASSTATS_FLOW_USER="${ASSTATS_FLOW_USER:-}"
+export ASSTATS_FLOW_PASSWORD="${ASSTATS_FLOW_PASSWORD:-}"
 
 exec perl "${ASSTATS_PROJECT_DIR}/bin/asstatd.pl" \
   -r "${RRD_DIR}" \
@@ -743,7 +750,27 @@ case "${action}" in
     ;;
   optimize-flow-db)
     systemctl stop asstatsd.service || true
-    if command -v sqlite3 >/dev/null 2>&1 && [[ -f "${FLOW_DB}" ]]; then
+    if [[ "${ASSTATS_FLOW_BACKEND:-sqlite}" == "pgsql" ]]; then
+      if command -v psql >/dev/null 2>&1; then
+        PGPASSWORD="${ASSTATS_FLOW_PASSWORD:-}" psql \
+          -h "${ASSTATS_FLOW_DB_HOST:-127.0.0.1}" \
+          -p "${ASSTATS_FLOW_DB_PORT:-5432}" \
+          -U "${ASSTATS_FLOW_USER:-flow}" \
+          -d "${ASSTATS_FLOW_DB_NAME:-flow_observatory}" <<'SQL'
+CREATE INDEX IF NOT EXISTS idx_flow_events_minute ON flow_events (minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_src_ip ON flow_events (src_ip, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_dst_ip ON flow_events (dst_ip, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_link_time ON flow_events (link_tag, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_src_asn_time ON flow_events (src_asn, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_dst_asn_time ON flow_events (dst_asn, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_link_ipver_time ON flow_events (link_tag, ip_version, minute_ts);
+ANALYZE flow_events;
+SQL
+        echo "PostgreSQL flow_events otimizado."
+      else
+        echo "psql nao encontrado."
+      fi
+    elif command -v sqlite3 >/dev/null 2>&1 && [[ -f "${FLOW_DB}" ]]; then
       sqlite3 "${FLOW_DB}" <<'SQL'
 PRAGMA busy_timeout = 10000;
 PRAGMA journal_mode = WAL;

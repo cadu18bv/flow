@@ -255,7 +255,7 @@ $windowStart = time() - ($queryHours * 3600);
 $dbPath = flow_as_drill_db_path();
 $summaryCards = array(
     array('label' => 'Janela', 'value' => $queryHours . ' horas'),
-    array('label' => 'Base', 'value' => is_file($dbPath) ? 'flow_events.db' : 'indisponivel'),
+    array('label' => 'Base', 'value' => flow_events_available() ? flow_events_db_label() : 'indisponivel'),
     array('label' => 'Links', 'value' => empty($selectedLinks) ? 'todos' : (string)count($selectedLinks)),
 );
 
@@ -267,11 +267,11 @@ $telemetryHtml = flow_render_empty_state('Sem telemetria', 'Ainda nao ha resumo 
 $heroBody = 'Clique em um grafico do radar para abrir a trilha detalhada por IP, com contrapartes, amostras recentes e serie temporal agregada.';
 $title = 'Drilldown por ASN';
 
-if ($queryAs > 0 && is_file($dbPath)) {
-    $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
-    $db->busyTimeout(1000);
-    @$db->exec('PRAGMA busy_timeout = 1000');
-    @$db->exec('PRAGMA query_only = ON');
+if ($queryAs > 0 && flow_events_available()) {
+    $dbError = null;
+    $db = flow_events_open_connection($dbError);
+}
+if ($queryAs > 0 && isset($db) && $db) {
     $linkConditions = array();
     foreach ($selectedLinks as $index => $tag) {
         $placeholder = ':link' . $index;

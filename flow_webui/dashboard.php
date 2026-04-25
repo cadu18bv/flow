@@ -60,21 +60,13 @@ function flow_dashboard_providers() {
 }
 
 function flow_dashboard_db_open() {
-    $dbPath = flow_events_db_path();
-    if (!is_file($dbPath)) {
-        return null;
-    }
-
-    try {
-        $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
-        $db->busyTimeout(1000);
-        @$db->exec('PRAGMA busy_timeout = 1000');
-        @$db->exec('PRAGMA query_only = ON');
+    $error = null;
+    $db = flow_events_open_connection($error);
+    if ($db) {
         @$db->createFunction('flow_dashboard_ip_match', 'flow_dashboard_ip_matches_filter', 2);
         return $db;
-    } catch (Exception $exception) {
-        return null;
     }
+    return null;
 }
 
 function flow_dashboard_ip_matches_filter($candidate, $filter) {

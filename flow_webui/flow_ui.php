@@ -1,5 +1,6 @@
 <?php
 require_once("auth.php");
+require_once("flow_db.php");
 
 function flow_active_class($current, $expected) {
     return $current === $expected ? 'is-active' : '';
@@ -340,17 +341,13 @@ function flow_render_graph_stats($stats) {
 }
 
 function flow_fetch_link_flow_stats($linkTag, $ipversion, $hours) {
-    $dbPath = flow_events_db_path();
-    if (!is_file($dbPath)) {
+    if (!flow_events_available()) {
         return null;
     }
 
-    try {
-        $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
-        $db->busyTimeout(1000);
-        @$db->exec('PRAGMA busy_timeout = 1000');
-        @$db->exec('PRAGMA query_only = ON');
-    } catch (Exception $exception) {
+    $dbError = null;
+    $db = flow_events_open_connection($dbError);
+    if (!$db) {
         return null;
     }
 

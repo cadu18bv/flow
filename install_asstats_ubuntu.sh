@@ -26,6 +26,13 @@ ASSTATS_EXPORTER_HOST="${ASSTATS_EXPORTER_HOST:-}"
 ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
 ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-128}"
 ASSTATS_FLOW_RETENTION_DAYS="${ASSTATS_FLOW_RETENTION_DAYS:-14}"
+ASSTATS_FLOW_BACKEND="${ASSTATS_FLOW_BACKEND:-sqlite}"
+ASSTATS_FLOW_DB_NAME="${ASSTATS_FLOW_DB_NAME:-flow_observatory}"
+ASSTATS_FLOW_DB_USER="${ASSTATS_FLOW_DB_USER:-flow}"
+ASSTATS_FLOW_DB_PASSWORD="${ASSTATS_FLOW_DB_PASSWORD:-flow_change_me}"
+ASSTATS_FLOW_DB_HOST="${ASSTATS_FLOW_DB_HOST:-127.0.0.1}"
+ASSTATS_FLOW_DB_PORT="${ASSTATS_FLOW_DB_PORT:-5432}"
+ASSTATS_FLOW_DSN="${ASSTATS_FLOW_DSN:-}"
 ASSTATS_TIMEZONE="${ASSTATS_TIMEZONE:-}"
 ASSTATS_MASTER_USER="${ASSTATS_MASTER_USER:-cecti}"
 ASSTATS_MASTER_PASSWORD="${ASSTATS_MASTER_PASSWORD:-kolx2yksu}"
@@ -120,6 +127,38 @@ prompt_customer_asn() {
   [[ -n "${input_asn}" ]] && ASSTATS_MY_ASN="${input_asn}"
 
   [[ "${ASSTATS_MY_ASN}" =~ ^[0-9]+$ ]] || fail "ASN invalido: ${ASSTATS_MY_ASN}"
+}
+
+prompt_flow_database_backend() {
+  local selected_backend input_db input_user input_password input_host input_port
+
+  printf "\n"
+  printf "Banco da telemetria por IP\n"
+  printf "  1) PostgreSQL (recomendado para producao)\n"
+  printf "  2) SQLite (simples/laboratorio)\n"
+  read -r -p "Opcao [1/2]: " selected_backend
+
+  case "${selected_backend:-1}" in
+    1) ASSTATS_FLOW_BACKEND="pgsql" ;;
+    2) ASSTATS_FLOW_BACKEND="sqlite" ;;
+    *) fail "Opcao invalida para banco de telemetria." ;;
+  esac
+
+  if [[ "${ASSTATS_FLOW_BACKEND}" == "pgsql" ]]; then
+    read -r -p "Database PostgreSQL [${ASSTATS_FLOW_DB_NAME}]: " input_db
+    read -r -p "Usuario PostgreSQL [${ASSTATS_FLOW_DB_USER}]: " input_user
+    read -r -s -p "Senha PostgreSQL [${ASSTATS_FLOW_DB_PASSWORD}]: " input_password
+    printf "\n"
+    read -r -p "Host PostgreSQL [${ASSTATS_FLOW_DB_HOST}]: " input_host
+    read -r -p "Porta PostgreSQL [${ASSTATS_FLOW_DB_PORT}]: " input_port
+
+    [[ -n "${input_db}" ]] && ASSTATS_FLOW_DB_NAME="${input_db}"
+    [[ -n "${input_user}" ]] && ASSTATS_FLOW_DB_USER="${input_user}"
+    [[ -n "${input_password}" ]] && ASSTATS_FLOW_DB_PASSWORD="${input_password}"
+    [[ -n "${input_host}" ]] && ASSTATS_FLOW_DB_HOST="${input_host}"
+    [[ -n "${input_port}" ]] && ASSTATS_FLOW_DB_PORT="${input_port}"
+    ASSTATS_FLOW_DSN="dbi:Pg:dbname=${ASSTATS_FLOW_DB_NAME};host=${ASSTATS_FLOW_DB_HOST};port=${ASSTATS_FLOW_DB_PORT}"
+  fi
 }
 
 prompt_master_credentials() {
@@ -450,9 +489,9 @@ build_package_lists() {
     git unzip wget net-tools curl dnsutils whois build-essential
     perl cpanminus make gcc
     libnet-patricia-perl libjson-xs-perl netcat-openbsd python3-requests
-    libdbd-sqlite3-perl sqlite3 libtrycatch-perl rrdtool librrds-perl librrdp-perl
+    libdbd-sqlite3-perl sqlite3 libdbd-pg-perl postgresql postgresql-client libtrycatch-perl rrdtool librrds-perl librrdp-perl
     librrdtool-oo-perl python3-rrdtool librrd-dev
-    apache2 libapache2-mod-php php php-sqlite3 php-cli php-gmp php-gd
+    apache2 libapache2-mod-php php php-sqlite3 php-pgsql php-cli php-gmp php-gd
     php-bcmath php-mbstring php-pear php-curl php-xml php-zip libyaml-perl
     snmp snmp-mibs-downloader tcpdump
   )
@@ -625,6 +664,66 @@ install_packages() {
 install_perl_modules() {
   info "Instalando modulos Perl via cpanminus"
   cpanm --notest Net::sFlow File::Find::Rule
+}
+
+configure_postgres_flow_db() {
+  [[ "${ASSTATS_FLOW_BACKEND}" == "pgsql" ]] || return 0
+
+  info "Configurando PostgreSQL para telemetria Flow"
+  systemctl enable --now postgresql || true
+
+  local pg_user_ident pg_user_sql pg_db_sql pg_password_sql
+  pg_user_ident="${ASSTATS_FLOW_DB_USER//\"/\"\"}"
+  pg_user_sql="${ASSTATS_FLOW_DB_USER//\'/\'\'}"
+  pg_db_sql="${ASSTATS_FLOW_DB_NAME//\'/\'\'}"
+  pg_password_sql="${ASSTATS_FLOW_DB_PASSWORD//\'/\'\'}"
+
+  sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='${pg_user_sql}'" | grep -q 1 || \
+    sudo -u postgres psql -c "CREATE USER \"${pg_user_ident}\" WITH PASSWORD '${pg_password_sql}';"
+
+  sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='${pg_db_sql}'" | grep -q 1 || \
+    sudo -u postgres createdb -O "${ASSTATS_FLOW_DB_USER}" "${ASSTATS_FLOW_DB_NAME}"
+
+  PGPASSWORD="${ASSTATS_FLOW_DB_PASSWORD}" psql \
+    -h "${ASSTATS_FLOW_DB_HOST}" \
+    -p "${ASSTATS_FLOW_DB_PORT}" \
+    -U "${ASSTATS_FLOW_DB_USER}" \
+    -d "${ASSTATS_FLOW_DB_NAME}" <<'SQL'
+CREATE TABLE IF NOT EXISTS flow_events (
+  minute_ts INTEGER NOT NULL,
+  router_ip TEXT NOT NULL,
+  link_tag TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  ip_version INTEGER NOT NULL,
+  src_ip TEXT NOT NULL,
+  dst_ip TEXT NOT NULL,
+  src_asn INTEGER NOT NULL,
+  dst_asn INTEGER NOT NULL,
+  flow_type TEXT NOT NULL,
+  bytes BIGINT NOT NULL DEFAULT 0,
+  samples BIGINT NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (
+    minute_ts,
+    router_ip,
+    link_tag,
+    direction,
+    ip_version,
+    src_ip,
+    dst_ip,
+    src_asn,
+    dst_asn,
+    flow_type
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_flow_events_minute ON flow_events (minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_src_ip ON flow_events (src_ip, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_dst_ip ON flow_events (dst_ip, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_link_time ON flow_events (link_tag, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_src_asn_time ON flow_events (src_asn, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_dst_asn_time ON flow_events (dst_asn, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_link_ipver_time ON flow_events (link_tag, ip_version, minute_ts);
+SQL
 }
 
 install_project() {
@@ -872,10 +971,11 @@ customize_web_ui() {
   info "Aplicando tema futurista CECTI na WebUI"
 
   local template_dir="${SCRIPT_DIR}/flow_webui"
-  if [[ -d "${template_dir}" ]] && [[ -f "${template_dir}/flow_ui.php" ]] && [[ -f "${template_dir}/custom.css" ]]; then
+  if [[ -d "${template_dir}" ]] && [[ -f "${template_dir}/flow_ui.php" ]] && [[ -f "${template_dir}/flow_db.php" ]] && [[ -f "${template_dir}/custom.css" ]]; then
     mkdir -p "${PROJECT_DIR}/www/css"
     install -m 0644 "${template_dir}/custom.css" "${PROJECT_DIR}/www/css/custom.css"
     install -m 0644 "${template_dir}/auth.php" "${PROJECT_DIR}/www/auth.php"
+    install -m 0644 "${template_dir}/flow_db.php" "${PROJECT_DIR}/www/flow_db.php"
     install -m 0644 "${template_dir}/flow_ui.php" "${PROJECT_DIR}/www/flow_ui.php"
     install -m 0644 "${template_dir}/dashboard.php" "${PROJECT_DIR}/www/dashboard.php"
     install -m 0644 "${template_dir}/ddos.php" "${PROJECT_DIR}/www/ddos.php"
@@ -1330,8 +1430,15 @@ ASSTATS_PROJECT_DIR=${PROJECT_DIR}
 ASSTATS_EXPORTER_HOST=${ASSTATS_EXPORTER_HOST}
 ASSTATS_SNMP_COMMUNITY=${ASSTATS_SNMP_COMMUNITY}
 ASSTATS_SAMPLING_RATE=${ASSTATS_SAMPLING_RATE}
+ASSTATS_FLOW_BACKEND=${ASSTATS_FLOW_BACKEND}
 ASSTATS_FLOW_DB=${PROJECT_DIR}/asstats/flow_events.db
 ASSTATS_FLOW_RETENTION_DAYS=${ASSTATS_FLOW_RETENTION_DAYS}
+ASSTATS_FLOW_DSN='${ASSTATS_FLOW_DSN}'
+ASSTATS_FLOW_USER='${ASSTATS_FLOW_DB_USER}'
+ASSTATS_FLOW_PASSWORD='${ASSTATS_FLOW_DB_PASSWORD}'
+ASSTATS_FLOW_DB_NAME='${ASSTATS_FLOW_DB_NAME}'
+ASSTATS_FLOW_DB_HOST='${ASSTATS_FLOW_DB_HOST}'
+ASSTATS_FLOW_DB_PORT='${ASSTATS_FLOW_DB_PORT}'
 ASSTATS_TIMEZONE=${ASSTATS_TIMEZONE}
 EOF
 
@@ -1344,6 +1451,11 @@ KNOWNLINKS="${ASSTATS_PROJECT_DIR}/conf/knownlinks"
 RRD_DIR="${ASSTATS_PROJECT_DIR}/rrd"
 
 [[ -f "${KNOWNLINKS}" ]] || { echo "Arquivo knownlinks nao encontrado: ${KNOWNLINKS}" >&2; exit 1; }
+
+export ASSTATS_FLOW_BACKEND="${ASSTATS_FLOW_BACKEND:-sqlite}"
+export ASSTATS_FLOW_DSN="${ASSTATS_FLOW_DSN:-}"
+export ASSTATS_FLOW_USER="${ASSTATS_FLOW_USER:-}"
+export ASSTATS_FLOW_PASSWORD="${ASSTATS_FLOW_PASSWORD:-}"
 
 exec perl "${ASSTATS_PROJECT_DIR}/bin/asstatd.pl" \
   -r "${RRD_DIR}" \
@@ -1594,7 +1706,27 @@ case "${action}" in
     ;;
   optimize-flow-db)
     systemctl stop asstatsd.service || true
-    if command -v sqlite3 >/dev/null 2>&1 && [[ -f "${FLOW_DB}" ]]; then
+    if [[ "${ASSTATS_FLOW_BACKEND:-sqlite}" == "pgsql" ]]; then
+      if command -v psql >/dev/null 2>&1; then
+        PGPASSWORD="${ASSTATS_FLOW_PASSWORD:-}" psql \
+          -h "${ASSTATS_FLOW_DB_HOST:-127.0.0.1}" \
+          -p "${ASSTATS_FLOW_DB_PORT:-5432}" \
+          -U "${ASSTATS_FLOW_USER:-flow}" \
+          -d "${ASSTATS_FLOW_DB_NAME:-flow_observatory}" <<'SQL'
+CREATE INDEX IF NOT EXISTS idx_flow_events_minute ON flow_events (minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_src_ip ON flow_events (src_ip, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_dst_ip ON flow_events (dst_ip, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_link_time ON flow_events (link_tag, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_src_asn_time ON flow_events (src_asn, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_dst_asn_time ON flow_events (dst_asn, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_link_ipver_time ON flow_events (link_tag, ip_version, minute_ts);
+ANALYZE flow_events;
+SQL
+        echo "PostgreSQL flow_events otimizado."
+      else
+        echo "psql nao encontrado."
+      fi
+    elif command -v sqlite3 >/dev/null 2>&1 && [[ -f "${FLOW_DB}" ]]; then
       sqlite3 "${FLOW_DB}" <<'SQL'
 PRAGMA busy_timeout = 10000;
 PRAGMA journal_mode = WAL;
@@ -1869,10 +2001,12 @@ main() {
   prompt_customer_asn
   prompt_timezone
   prompt_master_credentials
+  prompt_flow_database_backend
   configure_repos
   install_packages
   apply_timezone
   install_perl_modules
+  configure_postgres_flow_db
   install_project
   configure_snmp
   configure_web

@@ -38,6 +38,10 @@ def main() -> None:
         "my $childrunning = 0;\n",
         """my $childrunning = 0;
 my $flowdbpath;
+my $flowdb_backend = $ENV{'ASSTATS_FLOW_BACKEND'} || 'sqlite';
+my $flowdb_dsn = $ENV{'ASSTATS_FLOW_DSN'} || '';
+my $flowdb_user = $ENV{'ASSTATS_FLOW_USER'} || '';
+my $flowdb_password = $ENV{'ASSTATS_FLOW_PASSWORD'} || '';
 my $flowdb_retention_days = 14;
 my $flowcache = {};
 my $flowcache_lastcleanup = 0;
@@ -67,6 +71,10 @@ my $flowcache_cleanup_due = 0;
         "my $mapping = $opt{'m'};\n",
         """my $mapping = $opt{'m'};
 $flowdbpath = $opt{'q'} if defined($opt{'q'});
+$flowdb_backend = lc($flowdb_backend);
+if ($flowdb_backend ne 'sqlite' && $flowdb_backend ne 'pgsql') {
+	die("Unsupported flow DB backend: $flowdb_backend\n");
+}
 if (defined($opt{'R'})) {
 \t$flowdb_retention_days = $opt{'R'};
 \tdie("Flow query DB retention is non numeric\\n") if $flowdb_retention_days !~ /^[0-9]+$/;
@@ -90,24 +98,21 @@ if (defined($opt{'R'})) {
 }
 
 sub init_flowdb {
-	return if !defined($flowdbpath);
+	return if !defined($flowdbpath) && $flowdb_backend eq 'sqlite';
 
 	if ($flowdbpath =~ m{^(.*)/[^/]+$}) {
 		my $dirname = $1;
 		mkdir($dirname) if $dirname ne '' && !-d $dirname;
 	}
 
-	my $dbh = DBI->connect("dbi:SQLite:dbname=$flowdbpath", "", "", {
-		RaiseError => 1,
-		PrintError => 0,
-		AutoCommit => 1,
-		sqlite_busy_timeout => 10000,
-	});
+	my $dbh = flowdb_connect(1);
 
-	$dbh->do(q{PRAGMA busy_timeout = 10000});
-	$dbh->do(q{PRAGMA journal_mode = WAL});
-	$dbh->do(q{PRAGMA synchronous = NORMAL});
-	$dbh->do(q{PRAGMA temp_store = MEMORY});
+	if ($flowdb_backend eq 'sqlite') {
+		$dbh->do(q{PRAGMA busy_timeout = 10000});
+		$dbh->do(q{PRAGMA journal_mode = WAL});
+		$dbh->do(q{PRAGMA synchronous = NORMAL});
+		$dbh->do(q{PRAGMA temp_store = MEMORY});
+	}
 
 	$dbh->do(q{
 		CREATE TABLE IF NOT EXISTS flow_events (
@@ -121,8 +126,8 @@ sub init_flowdb {
 			src_asn INTEGER NOT NULL,
 			dst_asn INTEGER NOT NULL,
 			flow_type TEXT NOT NULL,
-			bytes INTEGER NOT NULL DEFAULT 0,
-			samples INTEGER NOT NULL DEFAULT 0,
+			bytes BIGINT NOT NULL DEFAULT 0,
+			samples BIGINT NOT NULL DEFAULT 0,
 			updated_at INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (
 				minute_ts,
@@ -147,6 +152,24 @@ sub init_flowdb {
 	$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_dst_asn_time ON flow_events (dst_asn, minute_ts)});
 	$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_link_ipver_time ON flow_events (link_tag, ip_version, minute_ts)});
 	$dbh->disconnect;
+}
+
+sub flowdb_connect {
+	my $autocommit = shift;
+	my $dsn;
+	if ($flowdb_backend eq 'pgsql') {
+		$dsn = $flowdb_dsn ne '' ? $flowdb_dsn : 'dbi:Pg:dbname=flow_observatory;host=127.0.0.1;port=5432';
+	} else {
+		$dsn = "dbi:SQLite:dbname=$flowdbpath";
+	}
+
+	my $dbh = DBI->connect($dsn, $flowdb_user, $flowdb_password, {
+		RaiseError => 1,
+		PrintError => 0,
+		AutoCommit => $autocommit,
+		sqlite_busy_timeout => 10000,
+	});
+	return $dbh;
 }
 
 sub cache_flow_record {
@@ -189,18 +212,13 @@ sub flush_flow_cache {
 	return if !defined($flowdbpath);
 	return if scalar(keys %$flowcache) == 0;
 
-	my $dbh = DBI->connect("dbi:SQLite:dbname=$flowdbpath", "", "", {
-		RaiseError => 1,
-		PrintError => 0,
-		AutoCommit => 0,
-		sqlite_busy_timeout => 10000,
-	});
+	my $dbh = flowdb_connect(0);
 
-	eval {
+	if ($flowdb_backend eq 'sqlite') {
 		$dbh->do(q{PRAGMA busy_timeout = 10000});
 		$dbh->do(q{PRAGMA journal_mode = WAL});
 		$dbh->do(q{PRAGMA synchronous = NORMAL});
-	};
+	}
 
 	eval {
 		my $sth = $dbh->prepare(q{
@@ -433,6 +451,77 @@ sub flush_flow_cache {
     )
 
     # Upgrade systems that already had the IP pipeline patch without duplicating helpers.
+    text = replace_all(
+        text,
+        "my $flowdbpath;\nmy $flowdb_retention_days",
+        "my $flowdbpath;\nmy $flowdb_backend = $ENV{'ASSTATS_FLOW_BACKEND'} || 'sqlite';\nmy $flowdb_dsn = $ENV{'ASSTATS_FLOW_DSN'} || '';\nmy $flowdb_user = $ENV{'ASSTATS_FLOW_USER'} || '';\nmy $flowdb_password = $ENV{'ASSTATS_FLOW_PASSWORD'} || '';\nmy $flowdb_retention_days",
+    )
+    text = replace_all(
+        text,
+        "$flowdbpath = $opt{'q'} if defined($opt{'q'});\nif (defined($opt{'R'}))",
+        "$flowdbpath = $opt{'q'} if defined($opt{'q'});\n$flowdb_backend = lc($flowdb_backend);\nif ($flowdb_backend ne 'sqlite' && $flowdb_backend ne 'pgsql') {\n\tdie(\"Unsupported flow DB backend: $flowdb_backend\\n\");\n}\nif (defined($opt{'R'}))",
+    )
+    text = replace_all(
+        text,
+        """	my $dbh = DBI->connect("dbi:SQLite:dbname=$flowdbpath", "", "", {
+		RaiseError => 1,
+		PrintError => 0,
+		AutoCommit => 1,
+		sqlite_busy_timeout => 10000,
+	});
+
+	$dbh->do(q{PRAGMA busy_timeout = 10000});
+	$dbh->do(q{PRAGMA journal_mode = WAL});
+	$dbh->do(q{PRAGMA synchronous = NORMAL});
+	$dbh->do(q{PRAGMA temp_store = MEMORY});
+""",
+        """	my $dbh = flowdb_connect(1);
+
+	if ($flowdb_backend eq 'sqlite') {
+		$dbh->do(q{PRAGMA busy_timeout = 10000});
+		$dbh->do(q{PRAGMA journal_mode = WAL});
+		$dbh->do(q{PRAGMA synchronous = NORMAL});
+		$dbh->do(q{PRAGMA temp_store = MEMORY});
+	}
+""",
+    )
+    text = replace_all(
+        text,
+        """	my $dbh = DBI->connect("dbi:SQLite:dbname=$flowdbpath", "", "", {
+		RaiseError => 1,
+		PrintError => 0,
+		AutoCommit => 0,
+		sqlite_busy_timeout => 10000,
+	});
+""",
+        """	my $dbh = flowdb_connect(0);
+""",
+    )
+    if "sub flowdb_connect {" not in text and "sub cache_flow_record {" in text:
+        text = text.replace(
+            "sub cache_flow_record {\n",
+            """sub flowdb_connect {
+	my $autocommit = shift;
+	my $dsn;
+	if ($flowdb_backend eq 'pgsql') {
+		$dsn = $flowdb_dsn ne '' ? $flowdb_dsn : 'dbi:Pg:dbname=flow_observatory;host=127.0.0.1;port=5432';
+	} else {
+		$dsn = "dbi:SQLite:dbname=$flowdbpath";
+	}
+
+	my $dbh = DBI->connect($dsn, $flowdb_user, $flowdb_password, {
+		RaiseError => 1,
+		PrintError => 0,
+		AutoCommit => $autocommit,
+		sqlite_busy_timeout => 10000,
+	});
+	return $dbh;
+}
+
+sub cache_flow_record {
+""",
+            1,
+        )
     text = replace_all(
         text,
         "AutoCommit => 1,\n\t});\n\n\t$dbh->do(q{\n\t\tCREATE TABLE IF NOT EXISTS flow_events",

@@ -257,34 +257,17 @@ function flow_build_export_url($ip, $mode, $hours, $link, $asn) {
 }
 
 function flow_query_open_db($dbPath, &$error = null) {
-    $error = null;
-
-    if (!is_file($dbPath)) {
-        $error = 'A base flow_events.db ainda nao existe neste ambiente.';
-        return null;
-    }
-
-    try {
-        $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
-        $db->busyTimeout(1000);
-        @$db->exec('PRAGMA busy_timeout = 1000');
-        @$db->exec('PRAGMA query_only = ON');
-        return $db;
-    } catch (Exception $exception) {
-        $error = 'Nao foi possivel abrir a base de eventos por IP.';
-        return null;
-    }
+    return flow_events_open_connection($error);
 }
 
 function flow_query_has_events_table($db) {
-    if (!$db instanceof SQLite3) {
-        return false;
-    }
-    $exists = @$db->querySingle("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'flow_events' LIMIT 1");
-    return $exists === 'flow_events';
+    return flow_events_has_table($db, 'flow_events');
 }
 
 function flow_query_register_ip_matcher($db) {
+    if ($db instanceof FlowPgDb) {
+        return true;
+    }
     if (!$db instanceof SQLite3) {
         return false;
     }
@@ -517,7 +500,7 @@ function flow_render_query_table($headers, $rows) {
 
 function flow_query_pipeline_snapshot($dbPath) {
     $snapshot = array(
-        'db_ready' => is_file($dbPath),
+        'db_ready' => flow_events_available(),
         'total_rows' => 0,
         'recent_rows' => 0,
         'last_seen' => null,
@@ -569,7 +552,7 @@ $queryHours = isset($_GET['hours']) ? (int)$_GET['hours'] : 24;
 $exportPdf = isset($_GET['export']) && $_GET['export'] === 'pdf';
 $queryHours = array_key_exists($queryHours, flow_query_hours_options()) ? $queryHours : 24;
 $dbPath = flow_query_db_path();
-$dbReady = file_exists($dbPath);
+$dbReady = flow_events_available();
 $pipeline = flow_query_pipeline_snapshot($dbPath);
 $searchError = '';
 $windowStart = time() - ($queryHours * 3600);
@@ -587,7 +570,7 @@ $insightsHtml = flow_render_empty_state('Pipeline indisponivel', 'A base flow_ev
 
 if ($pipeline['db_ready']) {
     $insightsHtml = '<div class="flow-kpi-strip">'
-        . '<div class="flow-kpi"><span>Base</span><strong>flow_events.db</strong></div>'
+        . '<div class="flow-kpi"><span>Base</span><strong>' . htmlspecialchars(flow_events_db_label()) . '</strong></div>'
         . '<div class="flow-kpi"><span>Linhas totais</span><strong>' . htmlspecialchars(number_format($pipeline['total_rows'], 0, ',', '.')) . '</strong></div>'
         . '<div class="flow-kpi"><span>Ultima amostra</span><strong>' . htmlspecialchars($pipeline['last_seen'] ? flow_format_query_time($pipeline['last_seen']) : 'sem dados') . '</strong></div>'
         . '<div class="flow-kpi"><span>Ultima hora</span><strong>' . htmlspecialchars(number_format($pipeline['recent_rows'], 0, ',', '.')) . ' eventos</strong></div>'
@@ -600,7 +583,7 @@ if ($queryIp !== '') {
     } elseif (!flow_validate_asn_filter($queryAsn)) {
         $searchError = 'O filtro de ASN precisa ser numerico.';
     } elseif (!$dbReady) {
-        $searchError = 'A base flow_events.db ainda nao existe neste ambiente. Rode a corretiva do coletor e aguarde novas amostras.';
+        $searchError = 'A base de telemetria por IP ainda nao esta disponivel. Verifique o backend configurado e aguarde novas amostras.';
     } else {
         $dbError = '';
         $db = flow_query_open_db($dbPath, $dbError);
@@ -771,7 +754,7 @@ if ($queryIp !== '') {
                     . '<div class="flow-kpi"><span>Modo</span><strong>' . htmlspecialchars(strtoupper($queryMode)) . '</strong></div>'
                     . '<div class="flow-kpi"><span>Interface</span><strong>' . htmlspecialchars($queryLink !== '' ? $queryLink : 'Todas') . '</strong></div>'
                     . '<div class="flow-kpi"><span>ASN</span><strong>' . htmlspecialchars($queryAsn !== '' ? 'AS' . $queryAsn : 'Todos') . '</strong></div>'
-                    . '<div class="flow-kpi"><span>Base</span><strong>' . htmlspecialchars(basename($dbPath)) . '</strong></div>'
+                    . '<div class="flow-kpi"><span>Base</span><strong>' . htmlspecialchars(flow_events_db_label()) . '</strong></div>'
                     . '<div class="flow-kpi"><span>Linhas filtradas</span><strong>' . htmlspecialchars(number_format((int)$summary['matched_rows'], 0, ',', '.')) . '</strong></div>'
                     . '<div class="flow-kpi"><span>Ultima amostra global</span><strong>' . htmlspecialchars($pipeline['last_seen'] ? flow_format_query_time($pipeline['last_seen']) : 'sem dados') . '</strong></div>'
                     . '</div>';

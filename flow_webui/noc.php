@@ -3,29 +3,13 @@ require_once("func.inc");
 require_once("flow_ui.php");
 
 function flow_noc_db_open() {
-    $dbPath = flow_events_db_path();
-    if (!is_file($dbPath)) {
-        return null;
-    }
-
-    try {
-        $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
-        $db->busyTimeout(1000);
-        @$db->exec('PRAGMA busy_timeout = 1000');
-        @$db->exec('PRAGMA query_only = ON');
-        return $db;
-    } catch (Exception $exception) {
-        return null;
-    }
+    $error = null;
+    return flow_events_open_connection($error);
 }
 
 function flow_noc_db_health($db) {
     $health = array('ready' => false, 'rows' => 0, 'last_seen' => null);
-    if (!$db instanceof SQLite3) {
-        return $health;
-    }
-    $table = @$db->querySingle("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'flow_events' LIMIT 1");
-    if ($table !== 'flow_events') {
+    if (!flow_events_has_table($db, 'flow_events')) {
         return $health;
     }
     $health['ready'] = true;

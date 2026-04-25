@@ -9,6 +9,7 @@ Plataforma de observabilidade de trafego com interface web `flow`, coleta por AS
 - tema visual proprio da plataforma
 - coleta principal para visao por ASN
 - base paralela para busca por IP origem/destino
+- backend de telemetria por IP em PostgreSQL para producao, com SQLite como fallback
 - utilitario para anexar novos roteadores/exportadores depois da instalacao
 
 ## Estrutura principal
@@ -47,6 +48,8 @@ O instalador oferece 3 operacoes:
 - adicionar mais um roteador/exportador no flow
 
 Durante `install` e `theme`, o script tambem pergunta qual timezone deve ser usado no ambiente. Esse ajuste e aplicado no sistema e no PHP/Apache para manter a interface e os relatorios no horario esperado.
+
+Na instalacao completa, o script tambem pergunta qual banco sera usado para a telemetria por IP. Para ambientes em producao, use PostgreSQL. O SQLite continua disponivel para laboratorio, ambientes pequenos ou fallback rapido.
 
 Tambem e possivel chamar direto:
 
@@ -95,7 +98,26 @@ O ambiente trabalha com duas trilhas:
 
 - agrega por minuto os fluxos observados
 - grava `src_ip`, `dst_ip`, `src_asn`, `dst_asn`, `link_tag`, `direction`, `ip_version`, `bytes` e `samples`
-- atualiza `/data/asstats/asstats/flow_events.db`
+- usa PostgreSQL quando configurado no instalador
+- usa `/data/asstats/asstats/flow_events.db` quando o backend selecionado for SQLite
+
+## Banco de telemetria por IP
+
+Backend recomendado:
+
+```text
+PostgreSQL
+```
+
+Use PostgreSQL quando o servidor recebe muito fluxo, quando o IP Lens e os paineis DDoS/NOC serao usados com frequencia, ou quando o volume de eventos crescer ao longo dos dias.
+
+Backend alternativo:
+
+```text
+SQLite
+```
+
+Use SQLite apenas para teste, laboratorio ou instalacoes pequenas. Ele funciona, mas pode travar leituras e escritas simultaneas quando a coleta esta intensa.
 
 ## Rotas web
 
@@ -125,6 +147,8 @@ Principais caminhos do runtime:
 /etc/default/asstats
 /usr/local/bin/asstats-add-router.sh
 ```
+
+Observacao: `flow_events.db` so e usado quando o backend da telemetria por IP for SQLite. Em PostgreSQL, os dados ficam na tabela `flow_events`.
 
 ## Adicionar mais roteadores
 
@@ -171,6 +195,10 @@ sudo ASSTATS_PORT_NETFLOW=9000 \
      ASSTATS_TIMEZONE=America/Fortaleza \
      ASSTATS_WEB_ALIAS=flow \
      ASSTATS_FLOW_RETENTION_DAYS=14 \
+     ASSTATS_FLOW_BACKEND=pgsql \
+     ASSTATS_FLOW_DB_NAME=flow_observatory \
+     ASSTATS_FLOW_DB_USER=flow \
+     ASSTATS_FLOW_DB_PASSWORD='troque_esta_senha' \
      ASSTATS_ACTION=install \
      ./install_asstats_ubuntu.sh
 ```
@@ -183,6 +211,10 @@ Padroes:
 - `ASSTATS_TIMEZONE` usa o timezone atual do servidor como padrao
 - `ASSTATS_WEB_ALIAS=flow`
 - `ASSTATS_FLOW_RETENTION_DAYS=14`
+- `ASSTATS_FLOW_BACKEND=pgsql` para PostgreSQL ou `sqlite` para SQLite
+- `ASSTATS_FLOW_DB_NAME=flow_observatory`
+- `ASSTATS_FLOW_DB_USER=flow`
+- `ASSTATS_FLOW_DB_PASSWORD=flow_change_me`
 
 ## Validacoes uteis
 
@@ -213,11 +245,24 @@ sqlite3 /data/asstats/asstats/asstats_day.txt '.tables'
 sqlite3 /data/asstats/asstats/asstats_day.txt 'select count(*) from stats;'
 ```
 
-Conferir a base paralela por IP:
+Conferir a base paralela por IP usando SQLite:
 
 ```bash
 sqlite3 /data/asstats/asstats/flow_events.db '.tables'
 sqlite3 /data/asstats/asstats/flow_events.db 'select count(*) from flow_events;'
+```
+
+Conferir a base paralela por IP usando PostgreSQL:
+
+```bash
+source /etc/default/asstats
+PGPASSWORD="${ASSTATS_FLOW_PASSWORD}" psql -h "${ASSTATS_FLOW_DB_HOST}" -p "${ASSTATS_FLOW_DB_PORT}" -U "${ASSTATS_FLOW_USER}" -d "${ASSTATS_FLOW_DB_NAME}" -c 'select count(*) from flow_events;'
+```
+
+Otimizar a base de telemetria por IP:
+
+```bash
+sudo /usr/local/bin/flow-maintenance-helper.sh optimize-flow-db
 ```
 
 Conferir linhas de um exportador no `knownlinks`:
