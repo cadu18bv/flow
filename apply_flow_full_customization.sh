@@ -432,6 +432,7 @@ apply_flow_templates() {
   install -m 0644 "${TEMPLATE_DIR}/custom.css" "${WWW_DIR}/css/custom.css"
   install -m 0644 "${TEMPLATE_DIR}/auth.php" "${WWW_DIR}/auth.php"
   install -m 0644 "${TEMPLATE_DIR}/flow_ui.php" "${WWW_DIR}/flow_ui.php"
+  install -m 0644 "${TEMPLATE_DIR}/dashboard.php" "${WWW_DIR}/dashboard.php"
   install -m 0644 "${TEMPLATE_DIR}/index.php" "${WWW_DIR}/index.php"
   install -m 0644 "${TEMPLATE_DIR}/linkusage.php" "${WWW_DIR}/linkusage.php"
   install -m 0644 "${TEMPLATE_DIR}/history.php" "${WWW_DIR}/history.php"

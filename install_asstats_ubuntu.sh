@@ -878,6 +878,7 @@ customize_web_ui() {
     install -m 0644 "${template_dir}/custom.css" "${PROJECT_DIR}/www/css/custom.css"
     install -m 0644 "${template_dir}/auth.php" "${PROJECT_DIR}/www/auth.php"
     install -m 0644 "${template_dir}/flow_ui.php" "${PROJECT_DIR}/www/flow_ui.php"
+    install -m 0644 "${template_dir}/dashboard.php" "${PROJECT_DIR}/www/dashboard.php"
     install -m 0644 "${template_dir}/index.php" "${PROJECT_DIR}/www/index.php"
     install -m 0644 "${template_dir}/linkusage.php" "${PROJECT_DIR}/www/linkusage.php"
     install -m 0644 "${template_dir}/history.php" "${PROJECT_DIR}/www/history.php"

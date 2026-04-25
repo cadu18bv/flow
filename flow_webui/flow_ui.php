@@ -29,6 +29,7 @@ function flow_render_shell_start($title, $active = 'overview') {
     $currentUser = flow_auth_current_user();
     $username = htmlspecialchars($currentUser ? $currentUser['username'] : 'guest');
     $userRole = htmlspecialchars($currentUser ? strtoupper($currentUser['role']) : 'GUEST');
+    $activeDashboard = flow_active_class($active, 'dashboard');
     $activeOverview = flow_active_class($active, 'overview');
     $activeHistory = flow_active_class($active, 'history');
     $activeIp = flow_active_class($active, 'ipsearch');
@@ -71,6 +72,7 @@ function flow_render_shell_start($title, $active = 'overview') {
         </div>
       </div>
       <nav class="flow-nav">
+        <a class="{$activeDashboard}" href="dashboard.php">Dashboard</a>
         <a class="{$activeOverview}" href="index.php">Radar AS</a>
         <a class="{$activeHistory}" href="history.php">ASN Explorer</a>
         <a class="{$activeIp}" href="ipsearch.php">IP Lens</a>
@@ -167,6 +169,10 @@ function flow_format_bits($bits) {
         return sprintf('%.2f Kb/s', $bits / 1000);
     }
     return sprintf('%.0f b/s', $bits);
+}
+
+function flow_events_db_path() {
+    return dirname(__DIR__) . DIRECTORY_SEPARATOR . 'asstats' . DIRECTORY_SEPARATOR . 'flow_events.db';
 }
 
 function flow_resolve_selected_links($selectedLinks) {
@@ -314,6 +320,69 @@ function flow_render_graph_stats($stats) {
     }
     $html .= '</div>';
     return $html;
+}
+
+function flow_fetch_link_flow_stats($linkTag, $ipversion, $hours) {
+    $dbPath = flow_events_db_path();
+    if (!is_file($dbPath)) {
+        return null;
+    }
+
+    try {
+        $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
+    } catch (Exception $exception) {
+        return null;
+    }
+
+    $start = time() - ((int)$hours * 3600);
+    $stmt = $db->prepare(
+        "SELECT minute_ts, direction, SUM(bytes) AS total_bytes
+         FROM flow_events
+         WHERE minute_ts >= :start
+           AND link_tag = :link_tag
+           AND ip_version = :ip_version
+         GROUP BY minute_ts, direction
+         ORDER BY minute_ts ASC"
+    );
+    $stmt->bindValue(':start', $start, SQLITE3_INTEGER);
+    $stmt->bindValue(':link_tag', (string)$linkTag, SQLITE3_TEXT);
+    $stmt->bindValue(':ip_version', (int)$ipversion, SQLITE3_INTEGER);
+    $result = $stmt->execute();
+
+    $timeline = array();
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $minute = (int)$row['minute_ts'];
+        if (!isset($timeline[$minute])) {
+            $timeline[$minute] = array('in' => 0.0, 'out' => 0.0);
+        }
+        $direction = strtolower((string)$row['direction']) === 'out' ? 'out' : 'in';
+        $timeline[$minute][$direction] += (((float)$row['total_bytes']) * 8.0) / 60.0;
+    }
+    $db->close();
+
+    if (empty($timeline)) {
+        return null;
+    }
+
+    $stats = array(
+        'in' => array('min' => null, 'max' => null, 'current' => null),
+        'out' => array('min' => null, 'max' => null, 'current' => null),
+    );
+
+    foreach ($timeline as $point) {
+        foreach (array('in', 'out') as $direction) {
+            $value = (float)$point[$direction];
+            if ($stats[$direction]['min'] === null || $value < $stats[$direction]['min']) {
+                $stats[$direction]['min'] = $value;
+            }
+            if ($stats[$direction]['max'] === null || $value > $stats[$direction]['max']) {
+                $stats[$direction]['max'] = $value;
+            }
+            $stats[$direction]['current'] = $value;
+        }
+    }
+
+    return $stats;
 }
 
 function flow_render_hero($eyebrow, $title, $subtitle, $stats = array()) {
@@ -484,13 +553,13 @@ function flow_render_dual_graph($title, $graph4, $graph6 = '') {
     return $html;
 }
 
-function flow_render_link_card($title, $graph4, $graph6 = '') {
+function flow_render_link_card($title, $graph4, $graph6 = '', $stats4 = null, $stats6 = null) {
     $html = '<article class="flow-link-card">';
     $html .= '<header><span>' . htmlspecialchars($title) . '</span></header>';
     $html .= '<div class="flow-graph-pair">';
-    $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div>' . $graph4 . '</div>';
+    $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div>' . $graph4 . flow_render_graph_stats($stats4) . '</div>';
     if ($graph6 !== '') {
-        $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div>' . $graph6 . '</div>';
+        $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div>' . $graph6 . flow_render_graph_stats($stats6) . '</div>';
     }
     $html .= '</div>';
     $html .= '</article>';

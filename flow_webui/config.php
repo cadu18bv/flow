@@ -37,7 +37,9 @@ function flow_read_knownlinks_text() {
 }
 
 function flow_write_knownlinks_text($text) {
-    file_put_contents(flow_knownlinks_path(), rtrim((string)$text) . PHP_EOL);
+    $text = (string)$text;
+    $text = str_replace(array("\r\n", "\r"), "\n", $text);
+    file_put_contents(flow_knownlinks_path(), rtrim($text) . "\n");
 }
 
 function flow_knownlinks_backup_dir() {
@@ -202,7 +204,8 @@ function flow_validate_knownlink_fields($exporter, $ifindex, $tag, $description,
 }
 
 function flow_validate_knownlinks_text($text) {
-    $lines = preg_split('/\r\n|\r|\n/', (string)$text);
+    $text = str_replace(array("\r\n", "\r"), "\n", (string)$text);
+    $lines = preg_split('/\n/', $text);
     foreach ($lines as $index => $line) {
         $trimmed = trim((string)$line);
         if ($trimmed === '' || strpos($trimmed, '#') === 0) {

@@ -100,6 +100,31 @@ function flow_bgp_he_exchange_entries_from_html($html) {
         return $entries;
     }
 
+    if (preg_match_all('#Exchange\s+CC\s+City\s+IPv4\s+IPv6(.*?)(?:Loading probes|Updated\s+\d|\Z)#is', $html, $sections, PREG_SET_ORDER)) {
+        foreach ($sections as $section) {
+            if (preg_match_all('#(?:^|\n)\s*([^\n<][^\n]+?)\s*\n\s*BR\s+([A-Za-zÀ-ÿ ]+)\s+#u', $section[1], $rows, PREG_SET_ORDER)) {
+                foreach ($rows as $row) {
+                    $name = trim(html_entity_decode(strip_tags($row[1]), ENT_QUOTES, 'UTF-8'));
+                    $city = trim(html_entity_decode(strip_tags($row[2]), ENT_QUOTES, 'UTF-8'));
+                    if ($name === '') {
+                        continue;
+                    }
+                    $slug = $name;
+                    $entries[$slug] = array(
+                        'id' => 'bgphe:' . $slug,
+                        'slug' => $slug,
+                        'name' => $name,
+                        'source' => 'bgp.he',
+                    );
+                }
+            }
+        }
+    }
+
+    if (!empty($entries)) {
+        return $entries;
+    }
+
     if (preg_match_all('/member-of:\s+AS-PTTMetro(?:-[A-Z0-9]+)?-([A-Z]{2})/i', $html, $matches)) {
         foreach ($matches[1] as $stateCode) {
             $stateCode = strtoupper(trim((string)$stateCode));
@@ -118,6 +143,21 @@ function flow_bgp_he_exchange_entries_from_html($html) {
     }
 
     return $entries;
+}
+
+function flow_resolve_ix_query_asn() {
+    global $my_asn;
+
+    $queryAsn = isset($_GET['asn']) ? trim((string)$_GET['asn']) : '';
+    if ($queryAsn !== '' && ctype_digit($queryAsn)) {
+        return (int)$queryAsn;
+    }
+
+    if (isset($my_asn) && preg_match('/^[0-9]+$/', (string)$my_asn)) {
+        return (int)$my_asn;
+    }
+
+    return 0;
 }
 
 function flow_bgp_he_exchange_catalog($asn) {
@@ -230,6 +270,7 @@ $statsfile = isset($peerusage) && $peerusage ? $daypeerstatsfile : statsFileForH
 $label = statsLabelForHours($hours);
 $knownlinks = getknownlinks();
 $peerdb = class_exists('PeeringDB') ? new PeeringDB() : null;
+$query_asn = flow_resolve_ix_query_asn();
 $select_ix = '';
 $rows = '';
 $ix_name = '';
@@ -245,14 +286,16 @@ foreach ($knownlinks as $link) {
     }
 }
 
-if ($my_asn) {
-    $list_ix = flow_build_ix_catalog($my_asn, $peerdb);
+if ($query_asn) {
+    $list_ix = flow_build_ix_catalog($query_asn, $peerdb);
     if (!empty($list_ix)) {
         $ixStatus = 'catalogado';
         $select_ix .= '<form method="get" class="flow-form-stack">';
         foreach ($selected_links as $tag) {
             $select_ix .= '<input type="hidden" name="link_' . htmlspecialchars($tag) . '" value="on">';
         }
+        $select_ix .= '<label>ASN consultado</label>';
+        $select_ix .= '<input class="flow-input" type="text" name="asn" value="' . htmlspecialchars((string)$query_asn) . '" placeholder="Ex.: 268809">';
         $select_ix .= '<input type="hidden" name="n" value="' . (int)$ntop . '">';
         $select_ix .= '<input type="hidden" name="numhours" value="' . (int)$hours . '">';
         $select_ix .= '<label>Selecione o IX</label>';
@@ -274,7 +317,7 @@ if ($my_asn) {
         $ixStatus = 'sem-ix';
         $select_ix = flow_render_empty_state(
             'Nenhum IX encontrado para o ASN local',
-            'Revise o parametro my_asn em config.inc e confirme se esse ASN possui presenca visivel no bgp.he.'
+            'Revise o ASN consultado e confirme se esse sistema autonomo possui presenca visivel no bgp.he.'
         );
         $ixPanelTitle = 'ASN sem IX vinculado';
         $ixEmptyTitle = 'Sem IX para o ASN informado';
@@ -315,7 +358,7 @@ if ($ix_key !== '') {
 }
 
 $heroStats = array(
-    array('label' => 'ASN local', 'value' => $my_asn ? ('AS' . $my_asn) : 'nao definido'),
+    array('label' => 'ASN consultado', 'value' => $query_asn ? ('AS' . $query_asn) : 'nao definido'),
     array('label' => 'Janela', 'value' => $label),
     array('label' => 'Top monitorado', 'value' => $ntop . ' AS'),
     array('label' => 'IX atual', 'value' => $ix_name ?: 'Nao selecionado'),
@@ -328,8 +371,8 @@ echo flow_render_hero('ix analytics', 'Painel de IX', 'Visualizacao dedicada par
 echo '<div class="flow-grid">';
 echo '<div class="flow-stack">';
 echo flow_render_panel('Meu(s) IX', $select_ix, 'fa-building');
-echo flow_render_panel('Controles de observacao', flow_render_filter_form($hours, $ntop, $selected_links, 'ix.php', array('ix' => $ix_key)), 'fa-sliders');
-echo flow_render_panel('Links monitorados', flow_render_legend_form($knownlinks, $selected_links, $hours, $ntop, 'ix.php', array('ix' => $ix_key)), 'fa-random');
+echo flow_render_panel('Controles de observacao', flow_render_filter_form($hours, $ntop, $selected_links, 'ix.php', array('ix' => $ix_key, 'asn' => $query_asn)), 'fa-sliders');
+echo flow_render_panel('Links monitorados', flow_render_legend_form($knownlinks, $selected_links, $hours, $ntop, 'ix.php', array('ix' => $ix_key, 'asn' => $query_asn)), 'fa-random');
 echo '</div>';
 
 echo '<div class="flow-stack">';

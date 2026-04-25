@@ -446,6 +446,42 @@ function flow_render_query_table($headers, $rows) {
     return $html;
 }
 
+function flow_query_pipeline_snapshot($dbPath) {
+    $snapshot = array(
+        'db_ready' => is_file($dbPath),
+        'total_rows' => 0,
+        'recent_rows' => 0,
+        'last_seen' => null,
+    );
+
+    if (!$snapshot['db_ready']) {
+        return $snapshot;
+    }
+
+    try {
+        $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
+    } catch (Exception $exception) {
+        $snapshot['db_ready'] = false;
+        return $snapshot;
+    }
+
+    $row = $db->querySingle('SELECT COUNT(*) AS total_rows, MAX(minute_ts) AS last_seen FROM flow_events', true);
+    if (is_array($row)) {
+        $snapshot['total_rows'] = isset($row['total_rows']) ? (int)$row['total_rows'] : 0;
+        $snapshot['last_seen'] = isset($row['last_seen']) && $row['last_seen'] !== null ? (int)$row['last_seen'] : null;
+    }
+
+    $recentStmt = $db->prepare('SELECT COUNT(*) AS recent_rows FROM flow_events WHERE minute_ts >= :start');
+    $recentStmt->bindValue(':start', time() - 3600, SQLITE3_INTEGER);
+    $recentRow = $recentStmt->execute()->fetchArray(SQLITE3_ASSOC);
+    if (is_array($recentRow)) {
+        $snapshot['recent_rows'] = isset($recentRow['recent_rows']) ? (int)$recentRow['recent_rows'] : 0;
+    }
+
+    $db->close();
+    return $snapshot;
+}
+
 $queryIp = isset($_GET['ip']) ? trim($_GET['ip']) : '';
 $queryMode = isset($_GET['mode']) ? $_GET['mode'] : 'any';
 $queryLink = isset($_GET['link']) ? trim($_GET['link']) : '';
@@ -455,6 +491,7 @@ $exportPdf = isset($_GET['export']) && $_GET['export'] === 'pdf';
 $queryHours = array_key_exists($queryHours, flow_query_hours_options()) ? $queryHours : 24;
 $dbPath = flow_query_db_path();
 $dbReady = file_exists($dbPath);
+$pipeline = flow_query_pipeline_snapshot($dbPath);
 $searchError = '';
 $windowStart = time() - ($queryHours * 3600);
 
@@ -468,6 +505,15 @@ $chartHtml = flow_render_empty_state('Aguardando IP', 'Informe um IP de origem o
 $topCounterpartsHtml = flow_render_empty_state('Sem analise', 'A consulta sera populada quando um IP valido for informado.');
 $recentEventsHtml = flow_render_empty_state('Sem eventos', 'Nenhum evento agregado foi selecionado ainda.');
 $insightsHtml = flow_render_empty_state('Pipeline indisponivel', 'A base flow_events.db ainda nao foi criada por esse coletor.');
+
+if ($pipeline['db_ready']) {
+    $insightsHtml = '<div class="flow-kpi-strip">'
+        . '<div class="flow-kpi"><span>Base</span><strong>flow_events.db</strong></div>'
+        . '<div class="flow-kpi"><span>Linhas totais</span><strong>' . htmlspecialchars(number_format($pipeline['total_rows'], 0, ',', '.')) . '</strong></div>'
+        . '<div class="flow-kpi"><span>Ultima amostra</span><strong>' . htmlspecialchars($pipeline['last_seen'] ? flow_format_query_time($pipeline['last_seen']) : 'sem dados') . '</strong></div>'
+        . '<div class="flow-kpi"><span>Ultima hora</span><strong>' . htmlspecialchars(number_format($pipeline['recent_rows'], 0, ',', '.')) . ' eventos</strong></div>'
+        . '</div>';
+}
 
 if ($queryIp !== '') {
     if (!flow_validate_ip_filter($queryIp)) {
@@ -506,7 +552,8 @@ if ($queryIp !== '') {
                 COALESCE(SUM(bytes), 0) AS total_bytes,
                 COALESCE(SUM(samples), 0) AS total_samples,
                 COUNT(DISTINCT link_tag) AS link_count,
-                COUNT(DISTINCT CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_ip ELSE src_ip END) AS counterpart_count
+                COUNT(DISTINCT CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_ip ELSE src_ip END) AS counterpart_count,
+                COUNT(*) AS matched_rows
              FROM flow_events
              WHERE {$where}"
         );
@@ -524,6 +571,7 @@ if ($queryIp !== '') {
         $summaryCards[] = array('label' => 'Amostras', 'value' => number_format((int)$summary['total_samples'], 0, ',', '.'));
         $summaryCards[] = array('label' => 'Links', 'value' => (int)$summary['link_count']);
         $summaryCards[] = array('label' => 'Contrapartes', 'value' => (int)$summary['counterpart_count']);
+        $summaryCards[] = array('label' => 'Linhas filtradas', 'value' => number_format((int)$summary['matched_rows'], 0, ',', '.'));
         if ($queryLink !== '') {
             $summaryCards[] = array('label' => 'Interface', 'value' => $queryLink);
         }
@@ -641,6 +689,8 @@ if ($queryIp !== '') {
             . '<div class="flow-kpi"><span>Interface</span><strong>' . htmlspecialchars($queryLink !== '' ? $queryLink : 'Todas') . '</strong></div>'
             . '<div class="flow-kpi"><span>ASN</span><strong>' . htmlspecialchars($queryAsn !== '' ? 'AS' . $queryAsn : 'Todos') . '</strong></div>'
             . '<div class="flow-kpi"><span>Base</span><strong>' . htmlspecialchars(basename($dbPath)) . '</strong></div>'
+            . '<div class="flow-kpi"><span>Linhas filtradas</span><strong>' . htmlspecialchars(number_format((int)$summary['matched_rows'], 0, ',', '.')) . '</strong></div>'
+            . '<div class="flow-kpi"><span>Ultima amostra global</span><strong>' . htmlspecialchars($pipeline['last_seen'] ? flow_format_query_time($pipeline['last_seen']) : 'sem dados') . '</strong></div>'
             . '</div>';
 
         $db->close();

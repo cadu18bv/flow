@@ -20,7 +20,9 @@ $cards = '';
 foreach ($knownlinks as $link) {
     $graph4 = '<img alt="Fluxo IPv4" src="linkgraph.php?link=' . urlencode($link['tag']) . '&numhours=' . $hours . '&width=' . $default_graph_width . '&height=' . $default_graph_height . '&dname=' . rawurlencode($link['descr'] . ' - IPv4') . '&v=4" />';
     $graph6 = $showv6 ? '<img alt="Fluxo IPv6" src="linkgraph.php?link=' . urlencode($link['tag']) . '&numhours=' . $hours . '&width=' . $default_graph_width . '&height=' . $default_graph_height . '&dname=' . rawurlencode($link['descr'] . ' - IPv6') . '&v=6" />' : '';
-    $cards .= flow_render_link_card($link['descr'], $graph4, $graph6);
+    $stats4 = flow_fetch_link_flow_stats($link['tag'], 4, $hours);
+    $stats6 = $showv6 ? flow_fetch_link_flow_stats($link['tag'], 6, $hours) : null;
+    $cards .= flow_render_link_card($link['descr'], $graph4, $graph6, $stats4, $stats6);
 }
 
 echo '<div class="flow-grid-single">';
