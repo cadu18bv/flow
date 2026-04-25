@@ -440,6 +440,9 @@ apply_flow_templates() {
 apply_flow_collector_patch() {
   [[ -f "${PROJECT_DIR}/bin/asstatd.pl" ]] || return 0
   require_file "${COLLECTOR_PATCHER}"
+  if grep -q "flow_events" "${PROJECT_DIR}/bin/asstatd.pl" && grep -q "getopts('r:p:P:k:a:nm:q:R:'" "${PROJECT_DIR}/bin/asstatd.pl"; then
+    return 0
+  fi
   python3 "${COLLECTOR_PATCHER}" "${PROJECT_DIR}/bin/asstatd.pl"
 }
 

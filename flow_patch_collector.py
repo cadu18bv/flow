@@ -6,6 +6,8 @@ from pathlib import Path
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
+    if new in text:
+        return text
     if old not in text:
         raise SystemExit(f"Patch failure: snippet not found for {label}")
     return text.replace(old, new, 1)

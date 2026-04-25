@@ -558,6 +558,11 @@ apply_flow_collector_patch() {
   [[ -f "${COLLECTOR_PATCHER}" ]] || fail "Patcher do coletor nao encontrado: ${COLLECTOR_PATCHER}"
   [[ -f "${PROJECT_DIR}/bin/asstatd.pl" ]] || fail "Arquivo do coletor nao encontrado em ${PROJECT_DIR}/bin/asstatd.pl"
 
+  if grep -q "flow_events" "${PROJECT_DIR}/bin/asstatd.pl" && grep -q "getopts('r:p:P:k:a:nm:q:R:'" "${PROJECT_DIR}/bin/asstatd.pl"; then
+    info "Coletor ja possui a extensao da base paralela por IP"
+    return
+  fi
+
   info "Aplicando extensao do coletor para base paralela por IP"
   python3 "${COLLECTOR_PATCHER}" "${PROJECT_DIR}/bin/asstatd.pl"
   chmod 0755 "${PROJECT_DIR}/bin/asstatd.pl"
