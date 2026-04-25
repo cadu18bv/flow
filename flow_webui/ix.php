@@ -3,6 +3,28 @@ require_once("func.inc");
 require_once("flow_ui.php");
 
 function flow_http_fetch($url) {
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, array(
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_CONNECTTIMEOUT => 8,
+            CURLOPT_TIMEOUT => 12,
+            CURLOPT_USERAGENT => 'CECTI-Flow-Observatory/1.0',
+            CURLOPT_HTTPHEADER => array(
+                'Accept: text/html,application/xhtml+xml',
+                'Accept-Language: pt-BR,pt;q=0.9,en;q=0.8',
+                'Connection: close',
+            ),
+            CURLOPT_ENCODING => '',
+        ));
+        $content = curl_exec($ch);
+        curl_close($ch);
+        if (is_string($content) && $content !== '') {
+            return $content;
+        }
+    }
+
     $context = stream_context_create(array(
         'http' => array(
             'method' => 'GET',
@@ -10,6 +32,7 @@ function flow_http_fetch($url) {
             'header' => implode("\r\n", array(
                 'User-Agent: CECTI-Flow-Observatory/1.0',
                 'Accept: text/html,application/xhtml+xml',
+                'Accept-Language: pt-BR,pt;q=0.9,en;q=0.8',
                 'Connection: close',
             )),
         ),
@@ -17,6 +40,84 @@ function flow_http_fetch($url) {
 
     $content = @file_get_contents($url, false, $context);
     return is_string($content) ? $content : '';
+}
+
+function flow_bgp_he_state_name($code) {
+    $map = array(
+        'AC' => 'Rio Branco',
+        'AL' => 'Maceio',
+        'AM' => 'Manaus',
+        'AP' => 'Macapa',
+        'BA' => 'Salvador',
+        'CE' => 'Fortaleza',
+        'DF' => 'Brasilia',
+        'ES' => 'Vitoria',
+        'GO' => 'Goiania',
+        'MA' => 'Sao Luis',
+        'MG' => 'Belo Horizonte',
+        'MS' => 'Campo Grande',
+        'MT' => 'Cuiaba',
+        'PA' => 'Belem',
+        'PB' => 'Joao Pessoa',
+        'PE' => 'Recife',
+        'PI' => 'Teresina',
+        'PR' => 'Curitiba',
+        'RJ' => 'Rio de Janeiro',
+        'RN' => 'Natal',
+        'RO' => 'Porto Velho',
+        'RR' => 'Boa Vista',
+        'RS' => 'Porto Alegre',
+        'SC' => 'Florianopolis',
+        'SE' => 'Aracaju',
+        'SP' => 'Sao Paulo',
+        'TO' => 'Palmas',
+    );
+
+    $code = strtoupper(trim((string)$code));
+    return isset($map[$code]) ? $map[$code] : $code;
+}
+
+function flow_bgp_he_exchange_entries_from_html($html) {
+    $entries = array();
+
+    if (preg_match_all('#href="(?:https?://(?:ipv4\.)?bgp\.he\.net)?/exchange/([^"/?#]+)"[^>]*>([^<]+)</a>#i', $html, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $match) {
+            $slug = trim(html_entity_decode($match[1], ENT_QUOTES, 'UTF-8'));
+            $name = trim(html_entity_decode(strip_tags($match[2]), ENT_QUOTES, 'UTF-8'));
+            if ($slug === '' || $name === '') {
+                continue;
+            }
+            $entries[$slug] = array(
+                'id' => 'bgphe:' . $slug,
+                'slug' => $slug,
+                'name' => $name,
+                'source' => 'bgp.he',
+            );
+        }
+    }
+
+    if (!empty($entries)) {
+        return $entries;
+    }
+
+    if (preg_match_all('/member-of:\s+AS-PTTMetro(?:-[A-Z0-9]+)?-([A-Z]{2})/i', $html, $matches)) {
+        foreach ($matches[1] as $stateCode) {
+            $stateCode = strtoupper(trim((string)$stateCode));
+            if ($stateCode === '') {
+                continue;
+            }
+            $city = flow_bgp_he_state_name($stateCode);
+            $slug = 'PTT-' . $city;
+            $entries[$slug] = array(
+                'id' => 'bgphe:' . $slug,
+                'slug' => $slug,
+                'name' => 'PTT ' . $city,
+                'source' => 'bgp.he',
+            );
+        }
+    }
+
+    return $entries;
 }
 
 function flow_bgp_he_exchange_catalog($asn) {
@@ -33,23 +134,7 @@ function flow_bgp_he_exchange_catalog($asn) {
         return array();
     }
 
-    $entries = array();
-    if (preg_match_all('#href="/exchange/([^"/?#]+)"[^>]*>([^<]+)</a>#i', $html, $matches, PREG_SET_ORDER)) {
-        foreach ($matches as $match) {
-            $slug = trim(html_entity_decode($match[1], ENT_QUOTES, 'UTF-8'));
-            $name = trim(html_entity_decode(strip_tags($match[2]), ENT_QUOTES, 'UTF-8'));
-            if ($slug === '' || $name === '') {
-                continue;
-            }
-            $entries[$slug] = array(
-                'id' => 'bgphe:' . $slug,
-                'slug' => $slug,
-                'name' => $name,
-                'source' => 'bgp.he',
-            );
-        }
-    }
-
+    $entries = flow_bgp_he_exchange_entries_from_html($html);
     return array_values($entries);
 }
 
@@ -230,6 +315,7 @@ if ($ix_key !== '') {
 }
 
 $heroStats = array(
+    array('label' => 'ASN local', 'value' => $my_asn ? ('AS' . $my_asn) : 'nao definido'),
     array('label' => 'Janela', 'value' => $label),
     array('label' => 'Top monitorado', 'value' => $ntop . ' AS'),
     array('label' => 'IX atual', 'value' => $ix_name ?: 'Nao selecionado'),
