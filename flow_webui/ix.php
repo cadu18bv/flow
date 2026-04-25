@@ -125,7 +125,7 @@ function flow_bgp_he_exchange_entries_from_html($html) {
         return $entries;
     }
 
-    if (preg_match_all('/member-of:\s+AS-PTTMetro(?:-[A-Z0-9]+)?-([A-Z]{2})/i', $html, $matches)) {
+    if (preg_match_all('#member-of:\s+AS-PTTMetro(?:-[A-Z0-9]+)?-([A-Z]{2})#i', $html, $matches)) {
         foreach ($matches[1] as $stateCode) {
             $stateCode = strtoupper(trim((string)$stateCode));
             if ($stateCode === '') {

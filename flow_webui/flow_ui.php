@@ -31,6 +31,8 @@ function flow_render_shell_start($title, $active = 'overview') {
     $userRole = htmlspecialchars($currentUser ? strtoupper($currentUser['role']) : 'GUEST');
     $activeDashboard = flow_active_class($active, 'dashboard');
     $activeOverview = flow_active_class($active, 'overview');
+    $activeDdos = flow_active_class($active, 'ddos');
+    $activeNoc = flow_active_class($active, 'noc');
     $activeHistory = flow_active_class($active, 'history');
     $activeIp = flow_active_class($active, 'ipsearch');
     $activeAsset = flow_active_class($active, 'asset');
@@ -74,6 +76,8 @@ function flow_render_shell_start($title, $active = 'overview') {
       <nav class="flow-nav">
         <a class="{$activeDashboard}" href="dashboard.php">Dashboard</a>
         <a class="{$activeOverview}" href="index.php">Radar AS</a>
+        <a class="{$activeDdos}" href="ddos.php">DDoS</a>
+        <a class="{$activeNoc}" href="noc.php">NOC</a>
         <a class="{$activeHistory}" href="history.php">ASN Explorer</a>
         <a class="{$activeIp}" href="ipsearch.php">IP Lens</a>
         <a class="{$activeAsset}" href="asset.php">AS-SET Studio</a>
@@ -173,6 +177,19 @@ function flow_format_bits($bits) {
 
 function flow_events_db_path() {
     return dirname(__DIR__) . DIRECTORY_SEPARATOR . 'asstats' . DIRECTORY_SEPARATOR . 'flow_events.db';
+}
+
+function flow_build_as_drill_url($as, $hours, $selectedLinks = array()) {
+    $params = array(
+        'as' => (int)$as,
+        'numhours' => max(1, (int)$hours),
+    );
+
+    foreach ($selectedLinks as $tag) {
+        $params['link_' . $tag] = 'on';
+    }
+
+    return 'asdrill.php?' . http_build_query($params);
 }
 
 function flow_resolve_selected_links($selectedLinks) {
@@ -330,12 +347,14 @@ function flow_fetch_link_flow_stats($linkTag, $ipversion, $hours) {
 
     try {
         $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
+        $db->busyTimeout(2000);
+        @$db->exec('PRAGMA busy_timeout = 2000');
     } catch (Exception $exception) {
         return null;
     }
 
     $start = time() - ((int)$hours * 3600);
-    $stmt = $db->prepare(
+    $stmt = @$db->prepare(
         "SELECT minute_ts, direction, SUM(bytes) AS total_bytes
          FROM flow_events
          WHERE minute_ts >= :start
@@ -344,10 +363,19 @@ function flow_fetch_link_flow_stats($linkTag, $ipversion, $hours) {
          GROUP BY minute_ts, direction
          ORDER BY minute_ts ASC"
     );
+    if (!$stmt) {
+        $db->close();
+        return null;
+    }
+
     $stmt->bindValue(':start', $start, SQLITE3_INTEGER);
     $stmt->bindValue(':link_tag', (string)$linkTag, SQLITE3_TEXT);
     $stmt->bindValue(':ip_version', (int)$ipversion, SQLITE3_INTEGER);
-    $result = $stmt->execute();
+    $result = @$stmt->execute();
+    if ($result === false) {
+        $db->close();
+        return null;
+    }
 
     $timeline = array();
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
@@ -496,6 +524,8 @@ function flow_render_as_row($rank, $as, $asinfo, $nbytes, $start, $end, $peerusa
     $graph6 = $showv6 ? getHTMLUrl($as, 6, $asinfo['descr'], $start, $end, $peerusage, $selectedLinks) : '';
     $graph4Stats = flow_fetch_rrd_graph_stats($as, 4, $start, $end, $peerusage, $selectedLinks);
     $graph6Stats = $showv6 ? flow_fetch_rrd_graph_stats($as, 6, $start, $end, $peerusage, $selectedLinks) : null;
+    $hours = max(1, (int)round(($end - $start) / 3600));
+    $drillUrl = flow_build_as_drill_url($as, $hours, $selectedLinks);
     $quickLinks = '';
 
     if (isset($customlinks) && is_array($customlinks)) {
@@ -525,9 +555,9 @@ function flow_render_as_row($rank, $as, $asinfo, $nbytes, $start, $end, $peerusa
     $html .= '</div>';
     $html .= '</div>';
     $html .= '<div class="flow-as-graphs">';
-    $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div>' . $graph4 . flow_render_graph_stats($graph4Stats) . '</div>';
+    $html .= '<a class="flow-graph-drill" href="' . htmlspecialchars($drillUrl) . '" title="Abrir consumo detalhado por IP para AS' . htmlspecialchars((string)$as) . '"><div class="flow-graph-card"><div class="flow-graph-label">IPv4</div>' . $graph4 . flow_render_graph_stats($graph4Stats) . '</div></a>';
     if ($showv6) {
-        $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div>' . $graph6 . flow_render_graph_stats($graph6Stats) . '</div>';
+        $html .= '<a class="flow-graph-drill" href="' . htmlspecialchars($drillUrl) . '" title="Abrir consumo detalhado por IP para AS' . htmlspecialchars((string)$as) . '"><div class="flow-graph-card"><div class="flow-graph-label">IPv6</div>' . $graph6 . flow_render_graph_stats($graph6Stats) . '</div></a>';
     }
     $html .= '</div>';
     $html .= '</article>';

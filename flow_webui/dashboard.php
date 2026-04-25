@@ -2,62 +2,430 @@
 require_once("func.inc");
 require_once("flow_ui.php");
 
+function flow_dashboard_runtime_dir() {
+    return dirname(__DIR__) . DIRECTORY_SEPARATOR . 'runtime';
+}
+
+function flow_dashboard_local_profiles_path() {
+    return flow_dashboard_runtime_dir() . DIRECTORY_SEPARATOR . 'dashboard-local-cdn.json';
+}
+
+function flow_dashboard_local_profiles() {
+    static $profiles = null;
+    if ($profiles !== null) {
+        return $profiles;
+    }
+
+    $profiles = array();
+    $path = flow_dashboard_local_profiles_path();
+    if (!is_file($path)) {
+        return $profiles;
+    }
+
+    $content = @file_get_contents($path);
+    if ($content === false || trim($content) === '') {
+        return $profiles;
+    }
+
+    $decoded = json_decode($content, true);
+    if (!is_array($decoded)) {
+        return $profiles;
+    }
+
+    foreach ($decoded as $key => $profile) {
+        if (!is_array($profile)) {
+            continue;
+        }
+        $profiles[(string)$key] = array(
+            'links' => isset($profile['links']) && is_array($profile['links']) ? array_values(array_unique(array_map('strval', $profile['links']))) : array(),
+            'remote_asns' => isset($profile['remote_asns']) && is_array($profile['remote_asns']) ? array_values(array_unique(array_map('intval', $profile['remote_asns']))) : array(),
+            'local_asns' => isset($profile['local_asns']) && is_array($profile['local_asns']) ? array_values(array_unique(array_map('intval', $profile['local_asns']))) : array(),
+            'prefixes' => isset($profile['prefixes']) && is_array($profile['prefixes']) ? array_values(array_unique(array_map('strval', $profile['prefixes']))) : array(),
+            'note' => isset($profile['note']) ? trim((string)$profile['note']) : '',
+        );
+    }
+
+    return $profiles;
+}
+
 function flow_dashboard_providers() {
     return array(
-        array('key' => 'netflix', 'label' => 'Netflix', 'asn' => 2906, 'eyebrow' => 'streaming core'),
-        array('key' => 'facebook', 'label' => 'Facebook', 'asn' => 32934, 'eyebrow' => 'social delivery'),
-        array('key' => 'google', 'label' => 'Google', 'asn' => 15169, 'eyebrow' => 'search + video'),
-        array('key' => 'akamai', 'label' => 'Akamai', 'asn' => 20940, 'eyebrow' => 'cdn edge'),
-        array('key' => 'amazon', 'label' => 'Amazon', 'asn' => 16509, 'eyebrow' => 'cloud platform'),
-        array('key' => 'microsoft', 'label' => 'Microsoft', 'asn' => 8075, 'eyebrow' => 'cloud + enterprise'),
+        array('key' => 'netflix', 'label' => 'Netflix', 'eyebrow' => 'streaming core', 'asns' => array(2906, 40027, 55095, 394406), 'local_title' => 'Netflix local'),
+        array('key' => 'facebook', 'label' => 'Meta', 'eyebrow' => 'social delivery', 'asns' => array(32934, 63293), 'local_title' => 'Meta local'),
+        array('key' => 'google', 'label' => 'Google', 'eyebrow' => 'search + video', 'asns' => array(15169, 36040, 139070), 'local_title' => 'Google local'),
+        array('key' => 'akamai', 'label' => 'Akamai', 'eyebrow' => 'cdn edge', 'asns' => array(20940, 16625), 'local_title' => 'Akamai local'),
+        array('key' => 'amazon', 'label' => 'Amazon', 'eyebrow' => 'cloud platform', 'asns' => array(16509, 14618, 38895, 8987), 'local_title' => 'Amazon local'),
+        array('key' => 'microsoft', 'label' => 'Microsoft', 'eyebrow' => 'cloud + enterprise', 'asns' => array(8075, 8068, 12076), 'local_title' => 'Microsoft local'),
     );
 }
 
-function flow_dashboard_usage_for_as($asn, $statsfile, $selectedLinks) {
-    $top = getasstats_top(1, $statsfile, $selectedLinks, array((int)$asn));
-    if (isset($top[$asn])) {
-        return $top[$asn];
+function flow_dashboard_db_open() {
+    $dbPath = flow_events_db_path();
+    if (!is_file($dbPath)) {
+        return null;
     }
-    $keys = array_keys($top);
-    if (!empty($keys) && (int)$keys[0] === (int)$asn) {
-        return $top[$keys[0]];
+
+    try {
+        $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
+        $db->busyTimeout(2000);
+        @$db->exec('PRAGMA busy_timeout = 2000');
+        return $db;
+    } catch (Exception $exception) {
+        return null;
     }
-    return array(0, 0, 0, 0);
 }
 
-function flow_render_dashboard_provider_card($provider, $hours, $start, $end, $selectedLinks, $peerusage, $showv6) {
-    $as = (int)$provider['asn'];
-    $asinfo = getASInfo($as);
-    $descr = isset($asinfo['descr']) && trim((string)$asinfo['descr']) !== '' ? $asinfo['descr'] : $provider['label'];
-    $graph4 = getHTMLUrl($as, 4, $descr, $start, $end, $peerusage, $selectedLinks);
-    $graph6 = $showv6 ? getHTMLUrl($as, 6, $descr, $start, $end, $peerusage, $selectedLinks) : '';
-    $stats4 = flow_fetch_rrd_graph_stats($as, 4, $start, $end, $peerusage, $selectedLinks);
-    $stats6 = $showv6 ? flow_fetch_rrd_graph_stats($as, 6, $start, $end, $peerusage, $selectedLinks) : null;
-    $usage = flow_dashboard_usage_for_as($as, isset($peerusage) && $peerusage ? $GLOBALS['daypeerstatsfile'] : statsFileForHours($hours), $selectedLinks);
+function flow_dashboard_in_clause($values, $prefix) {
+    if (empty($values)) {
+        return '';
+    }
 
-    $in4 = isset($usage[0]) ? format_bytes($usage[0]) : '0 bytes';
-    $out4 = isset($usage[1]) ? format_bytes($usage[1]) : '0 bytes';
-    $in6 = isset($usage[2]) ? format_bytes($usage[2]) : '0 bytes';
-    $out6 = isset($usage[3]) ? format_bytes($usage[3]) : '0 bytes';
+    $placeholders = array();
+    foreach (array_values($values) as $index => $value) {
+        $placeholders[] = ':' . $prefix . $index;
+    }
+
+    return implode(', ', $placeholders);
+}
+
+function flow_dashboard_bind_in_clause($stmt, $values, $prefix, $type) {
+    foreach (array_values($values) as $index => $value) {
+        $stmt->bindValue(':' . $prefix . $index, $value, $type);
+    }
+}
+
+function flow_dashboard_sum_query($db, $conditions, $bindings, $hours) {
+    $sql = "
+        SELECT ip_version, lower(direction) AS direction, SUM(bytes) AS total_bytes
+        FROM flow_events
+        WHERE minute_ts >= :start
+    ";
+
+    if (!empty($conditions)) {
+        $sql .= ' AND ' . implode(' AND ', $conditions);
+    }
+
+    $sql .= ' GROUP BY ip_version, lower(direction)';
+
+    $stmt = @$db->prepare($sql);
+    if (!$stmt) {
+        return false;
+    }
+
+    $stmt->bindValue(':start', time() - ((int)$hours * 3600), SQLITE3_INTEGER);
+    foreach ($bindings as $binding) {
+        $stmt->bindValue($binding['name'], $binding['value'], $binding['type']);
+    }
+
+    $result = @$stmt->execute();
+    if ($result === false) {
+        return false;
+    }
+
+    $totals = array(0.0, 0.0, 0.0, 0.0);
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $isIpv6 = ((int)$row['ip_version'] === 6);
+        $isOut = ((string)$row['direction'] === 'out');
+        if (!$isIpv6 && !$isOut) {
+            $totals[0] += (float)$row['total_bytes'];
+        } elseif (!$isIpv6 && $isOut) {
+            $totals[1] += (float)$row['total_bytes'];
+        } elseif ($isIpv6 && !$isOut) {
+            $totals[2] += (float)$row['total_bytes'];
+        } else {
+            $totals[3] += (float)$row['total_bytes'];
+        }
+    }
+
+    return $totals;
+}
+
+function flow_dashboard_group_usage($provider, $statsfile, $selectedLinks) {
+    $asns = isset($provider['asns']) && is_array($provider['asns']) ? $provider['asns'] : array();
+    $asns = array_values(array_unique(array_map('intval', $asns)));
+    if (empty($asns)) {
+        return array(
+            'totals' => array(0, 0, 0, 0),
+            'members' => array(),
+            'dominant_asn' => 0,
+            'dominant_usage' => array(0, 0, 0, 0),
+        );
+    }
+
+    $rows = getasstats_top(max(50, count($asns)), $statsfile, $selectedLinks, $asns);
+    $totals = array(0, 0, 0, 0);
+    $members = array();
+    $dominantAsn = 0;
+    $dominantScore = -1;
+    $dominantUsage = array(0, 0, 0, 0);
+
+    foreach ($asns as $asn) {
+        $usage = isset($rows[$asn]) ? $rows[$asn] : array(0, 0, 0, 0);
+        $usage = array_values(array_pad($usage, 4, 0));
+        for ($i = 0; $i < 4; $i++) {
+            $totals[$i] += isset($usage[$i]) ? (float)$usage[$i] : 0;
+        }
+
+        $score = array_sum($usage);
+        if ($score > 0) {
+            $members[] = array('asn' => $asn, 'usage' => $usage, 'score' => $score);
+        }
+
+        if ($score > $dominantScore) {
+            $dominantScore = $score;
+            $dominantAsn = $asn;
+            $dominantUsage = $usage;
+        }
+    }
+
+    usort($members, function ($left, $right) {
+        if ($left['score'] === $right['score']) {
+            return $left['asn'] <=> $right['asn'];
+        }
+        return ($left['score'] > $right['score']) ? -1 : 1;
+    });
+
+    return array(
+        'totals' => $totals,
+        'members' => $members,
+        'dominant_asn' => $dominantAsn,
+        'dominant_usage' => $dominantUsage,
+    );
+}
+
+function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
+    $profiles = flow_dashboard_local_profiles();
+    $key = isset($provider['key']) ? (string)$provider['key'] : '';
+    if ($key === '' || !isset($profiles[$key])) {
+        return array(
+            'status' => 'nao_mapeado',
+            'classified_totals' => array(0, 0, 0, 0),
+            'pool_totals' => array(0, 0, 0, 0),
+            'shared_totals' => array(0, 0, 0, 0),
+            'links' => array(),
+            'remote_asns' => array(),
+            'prefixes' => array(),
+            'note' => 'Sem perfil explicito de CDN local. O dashboard nao infere cache local automaticamente para nao misturar CDN terceiro, transito ou entrega remota.',
+        );
+    }
+
+    $profile = $profiles[$key];
+    if (empty($profile['links']) && empty($profile['remote_asns']) && empty($profile['local_asns']) && empty($profile['prefixes'])) {
+        return array(
+            'status' => 'incompleto',
+            'classified_totals' => array(0, 0, 0, 0),
+            'pool_totals' => array(0, 0, 0, 0),
+            'shared_totals' => array(0, 0, 0, 0),
+            'links' => array(),
+            'remote_asns' => array(),
+            'prefixes' => array(),
+            'note' => 'O perfil local existe, mas ainda nao possui assinatura suficiente para uma classificacao confiavel.',
+        );
+    }
+
+    $linksFilter = !empty($selectedLinks) ? array_values(array_intersect($profile['links'], $selectedLinks)) : $profile['links'];
+    if (!empty($profile['links']) && empty($linksFilter)) {
+        return array(
+            'status' => 'fora_do_filtro',
+            'classified_totals' => array(0, 0, 0, 0),
+            'pool_totals' => array(0, 0, 0, 0),
+            'shared_totals' => array(0, 0, 0, 0),
+            'links' => $profile['links'],
+            'remote_asns' => $profile['remote_asns'],
+            'prefixes' => $profile['prefixes'],
+            'note' => 'Os links homologados para esse CDN local ficaram fora do filtro atual.',
+        );
+    }
+
+    $db = flow_dashboard_db_open();
+    if (!$db) {
+        return array(
+            'status' => 'indisponivel',
+            'classified_totals' => array(0, 0, 0, 0),
+            'pool_totals' => array(0, 0, 0, 0),
+            'shared_totals' => array(0, 0, 0, 0),
+            'links' => $profile['links'],
+            'remote_asns' => $profile['remote_asns'],
+            'prefixes' => $profile['prefixes'],
+            'note' => 'A base flow_events.db nao esta disponivel para validar o CDN local.',
+        );
+    }
+
+    $poolConditions = array();
+    $poolBindings = array();
+    if (!empty($linksFilter)) {
+        $poolConditions[] = 'link_tag IN (' . flow_dashboard_in_clause($linksFilter, 'link_') . ')';
+        foreach (array_values($linksFilter) as $index => $linkTag) {
+            $poolBindings[] = array('name' => ':link_' . $index, 'value' => (string)$linkTag, 'type' => SQLITE3_TEXT);
+        }
+    }
+    if (!empty($profile['local_asns'])) {
+        $poolConditions[] = '(src_asn IN (' . flow_dashboard_in_clause($profile['local_asns'], 'local_asn_') . ') OR dst_asn IN (' . flow_dashboard_in_clause($profile['local_asns'], 'local_asn_') . '))';
+        foreach (array_values($profile['local_asns']) as $index => $asn) {
+            $poolBindings[] = array('name' => ':local_asn_' . $index, 'value' => (int)$asn, 'type' => SQLITE3_INTEGER);
+        }
+    }
+
+    $poolTotals = flow_dashboard_sum_query($db, $poolConditions, $poolBindings, $hours);
+    if ($poolTotals === false) {
+        $db->close();
+        return array(
+            'status' => 'indisponivel',
+            'classified_totals' => array(0, 0, 0, 0),
+            'pool_totals' => array(0, 0, 0, 0),
+            'shared_totals' => array(0, 0, 0, 0),
+            'links' => $profile['links'],
+            'remote_asns' => $profile['remote_asns'],
+            'prefixes' => $profile['prefixes'],
+            'note' => 'Nao foi possivel ler a malha de CDN compartilhada nesta janela.',
+        );
+    }
+
+    $classifiedConditions = $poolConditions;
+    $classifiedBindings = $poolBindings;
+    if (!empty($profile['remote_asns'])) {
+        $classifiedConditions[] = '(src_asn IN (' . flow_dashboard_in_clause($profile['remote_asns'], 'remote_asn_') . ') OR dst_asn IN (' . flow_dashboard_in_clause($profile['remote_asns'], 'remote_asn_') . '))';
+        foreach (array_values($profile['remote_asns']) as $index => $asn) {
+            $classifiedBindings[] = array('name' => ':remote_asn_' . $index, 'value' => (int)$asn, 'type' => SQLITE3_INTEGER);
+        }
+    }
+
+    $classifiedTotals = flow_dashboard_sum_query($db, $classifiedConditions, $classifiedBindings, $hours);
+    $db->close();
+    if ($classifiedTotals === false) {
+        $classifiedTotals = array(0, 0, 0, 0);
+    }
+
+    $sharedTotals = array(0.0, 0.0, 0.0, 0.0);
+    for ($i = 0; $i < 4; $i++) {
+        $sharedTotals[$i] = max(0.0, (float)$poolTotals[$i] - (float)$classifiedTotals[$i]);
+    }
+
+    $status = 'sem_trafego';
+    if (array_sum($classifiedTotals) > 0) {
+        $status = 'validado';
+    } elseif (array_sum($sharedTotals) > 0) {
+        $status = 'compartilhado';
+    } elseif (array_sum($poolTotals) > 0) {
+        $status = 'pool_sem_assinatura';
+    }
+
+    return array(
+        'status' => $status,
+        'classified_totals' => $classifiedTotals,
+        'pool_totals' => $poolTotals,
+        'shared_totals' => $sharedTotals,
+        'links' => $profile['links'],
+        'remote_asns' => $profile['remote_asns'],
+        'prefixes' => $profile['prefixes'],
+        'note' => $profile['note'] !== '' ? $profile['note'] : 'CDN local contabilizado apenas por perfil explicito de links e/ou ASN homologados.',
+    );
+}
+
+function flow_dashboard_member_badges($members) {
+    if (empty($members)) {
+        return '<div class="flow-provider-members"><span class="flow-pill">Sem ASN ativo na janela</span></div>';
+    }
+
+    $items = array();
+    foreach (array_slice($members, 0, 6) as $member) {
+        $items[] = '<span class="flow-pill">AS' . htmlspecialchars((string)$member['asn']) . '</span>';
+    }
+
+    return '<div class="flow-provider-members">' . implode('', $items) . '</div>';
+}
+
+function flow_render_dashboard_provider_card($provider, $hours, $start, $end, $selectedLinks, $peerusage, $showv6, $statsfile) {
+    $group = flow_dashboard_group_usage($provider, $statsfile, $selectedLinks);
+    $local = flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks);
+    $dominantAsn = (int)$group['dominant_asn'];
+    $dominantInfo = $dominantAsn > 0 ? getASInfo($dominantAsn) : array('descr' => $provider['label']);
+    $dominantDescr = isset($dominantInfo['descr']) && trim((string)$dominantInfo['descr']) !== '' ? $dominantInfo['descr'] : $provider['label'];
+
+    $graph4 = $dominantAsn > 0 ? getHTMLUrl($dominantAsn, 4, $dominantDescr, $start, $end, $peerusage, $selectedLinks) : flow_render_empty_state('Sem grafico', 'Nenhum ASN do grupo gerou amostras nessa janela.');
+    $graph6 = ($showv6 && $dominantAsn > 0) ? getHTMLUrl($dominantAsn, 6, $dominantDescr, $start, $end, $peerusage, $selectedLinks) : '';
+    $stats4 = $dominantAsn > 0 ? flow_fetch_rrd_graph_stats($dominantAsn, 4, $start, $end, $peerusage, $selectedLinks) : null;
+    $stats6 = ($showv6 && $dominantAsn > 0) ? flow_fetch_rrd_graph_stats($dominantAsn, 6, $start, $end, $peerusage, $selectedLinks) : null;
+
+    $totals = $group['totals'];
+    $memberCount = count($group['members']);
+
+    $remoteIn4 = format_bytes((float)$totals[0]);
+    $remoteOut4 = format_bytes((float)$totals[1]);
+    $remoteIn6 = format_bytes((float)$totals[2]);
+    $remoteOut6 = format_bytes((float)$totals[3]);
+    $localIn4 = format_bytes((float)$local['classified_totals'][0]);
+    $localOut4 = format_bytes((float)$local['classified_totals'][1]);
+    $localIn6 = format_bytes((float)$local['classified_totals'][2]);
+    $localOut6 = format_bytes((float)$local['classified_totals'][3]);
+    $sharedIn4 = format_bytes((float)$local['shared_totals'][0]);
+    $sharedOut4 = format_bytes((float)$local['shared_totals'][1]);
+    $sharedIn6 = format_bytes((float)$local['shared_totals'][2]);
+    $sharedOut6 = format_bytes((float)$local['shared_totals'][3]);
+    $localLinks = empty($local['links']) ? 'nao mapeado' : implode(', ', $local['links']);
+    $localAsns = empty($local['remote_asns']) ? 'nao mapeado' : implode(', ', array_map(function ($asn) { return 'AS' . (int)$asn; }, $local['remote_asns']));
+    $localPrefixes = empty($local['prefixes']) ? 'nao mapeado' : implode(', ', $local['prefixes']);
 
     $html = '<article class="flow-provider-card flow-provider-' . htmlspecialchars($provider['key']) . '">';
     $html .= '<header class="flow-provider-head">';
     $html .= '<div class="flow-provider-copy">';
     $html .= '<span class="flow-eyebrow">' . htmlspecialchars($provider['eyebrow']) . '</span>';
     $html .= '<h3>' . htmlspecialchars($provider['label']) . '</h3>';
-    $html .= '<p>AS' . htmlspecialchars((string)$as) . ' • ' . htmlspecialchars($descr) . '</p>';
+    $html .= '<p>Grupo com ' . htmlspecialchars((string)count($provider['asns'])) . ' ASN mapeados • ' . htmlspecialchars((string)$memberCount) . ' ativos na janela</p>';
     $html .= '</div>';
     $html .= '<div class="flow-provider-actions">';
-    $html .= '<a class="flow-button flow-button-ghost" href="history.php?as=' . urlencode((string)$as) . '">Abrir ASN</a>';
+    if ($dominantAsn > 0) {
+        $html .= '<a class="flow-button flow-button-ghost" href="history.php?as=' . urlencode((string)$dominantAsn) . '">Abrir ASN dominante</a>';
+    }
     $html .= '</div>';
     $html .= '</header>';
+    $html .= flow_dashboard_member_badges($group['members']);
+    $html .= '<div class="flow-provider-split">';
+
+    $html .= '<section class="flow-provider-slice">';
+    $html .= '<header><strong>Entrega remota / backbone</strong><span>agrupamento por ASN do provedor</span></header>';
     $html .= '<div class="flow-provider-micro">';
-    $html .= '<span>IPv4 IN total ' . htmlspecialchars($in4) . '</span>';
-    $html .= '<span>IPv4 OUT total ' . htmlspecialchars($out4) . '</span>';
+    $html .= '<span>IPv4 IN grupo ' . htmlspecialchars($remoteIn4) . '</span>';
+    $html .= '<span>IPv4 OUT grupo ' . htmlspecialchars($remoteOut4) . '</span>';
     if ($showv6) {
-        $html .= '<span>IPv6 IN total ' . htmlspecialchars($in6) . '</span>';
-        $html .= '<span>IPv6 OUT total ' . htmlspecialchars($out6) . '</span>';
+        $html .= '<span>IPv6 IN grupo ' . htmlspecialchars($remoteIn6) . '</span>';
+        $html .= '<span>IPv6 OUT grupo ' . htmlspecialchars($remoteOut6) . '</span>';
     }
+    if ($dominantAsn > 0) {
+        $html .= '<span>ASN dominante AS' . htmlspecialchars((string)$dominantAsn) . '</span>';
+    }
+    $html .= '</div>';
+    $html .= '<div class="flow-provider-note">Grafico de referencia baseado no ASN dominante da janela atual: ' . htmlspecialchars($dominantAsn > 0 ? ('AS' . $dominantAsn . ' • ' . $dominantDescr) : 'sem ASN ativo') . '</div>';
+    $html .= '</section>';
+
+    $html .= '<section class="flow-provider-slice">';
+    $html .= '<header><strong>' . htmlspecialchars(isset($provider['local_title']) ? $provider['local_title'] : 'CDN local classificado') . '</strong><span>somente por link mais ASN/prefixo homologado</span></header>';
+    $html .= '<div class="flow-provider-micro">';
+    $html .= '<span>IPv4 IN local ' . htmlspecialchars($localIn4) . '</span>';
+    $html .= '<span>IPv4 OUT local ' . htmlspecialchars($localOut4) . '</span>';
+    if ($showv6) {
+        $html .= '<span>IPv6 IN local ' . htmlspecialchars($localIn6) . '</span>';
+        $html .= '<span>IPv6 OUT local ' . htmlspecialchars($localOut6) . '</span>';
+    }
+    $html .= '<span>Status ' . htmlspecialchars($local['status']) . '</span>';
+    $html .= '</div>';
+    $html .= '<div class="flow-provider-note">Links homologados: ' . htmlspecialchars($localLinks) . ' • ASN homologados: ' . htmlspecialchars($localAsns) . ' • Prefixos: ' . htmlspecialchars($localPrefixes) . '</div>';
+    $html .= '<div class="flow-provider-note">' . htmlspecialchars($local['note']) . '</div>';
+    $html .= '</section>';
+
+    $html .= '<section class="flow-provider-slice">';
+    $html .= '<header><strong>CDN compartilhado não classificado</strong><span>volume presente na malha local sem assinatura segura do provedor</span></header>';
+    $html .= '<div class="flow-provider-micro">';
+    $html .= '<span>IPv4 IN shared ' . htmlspecialchars($sharedIn4) . '</span>';
+    $html .= '<span>IPv4 OUT shared ' . htmlspecialchars($sharedOut4) . '</span>';
+    if ($showv6) {
+        $html .= '<span>IPv6 IN shared ' . htmlspecialchars($sharedIn6) . '</span>';
+        $html .= '<span>IPv6 OUT shared ' . htmlspecialchars($sharedOut6) . '</span>';
+    }
+    $html .= '</div>';
+    $html .= '<div class="flow-provider-note">Esse bloco representa o restante do tráfego na malha CDN local homologada que ainda não bateu com assinatura suficiente para atribuição segura ao provedor.</div>';
+    $html .= '</section>';
+
     $html .= '</div>';
     $html .= '<div class="flow-graph-pair">';
     $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div>' . $graph4 . flow_render_graph_stats($stats4) . '</div>';
@@ -72,11 +440,14 @@ function flow_render_dashboard_provider_card($provider, $hours, $start, $end, $s
 
 $ntop = 6;
 $hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 24;
-if ($hours < 1) $hours = 24;
+if ($hours < 1) {
+    $hours = 24;
+}
 $label = statsLabelForHours($hours);
 $knownlinks = getknownlinks();
 $selected_links = array();
 $peerusage = isset($peerusage) ? $peerusage : 0;
+$statsfile = $peerusage ? $daypeerstatsfile : statsFileForHours($hours);
 $start = time() - $hours * 3600;
 $end = time();
 $providers = flow_dashboard_providers();
@@ -96,16 +467,26 @@ $heroStats = array(
 
 $cards = '';
 foreach ($providers as $provider) {
-    $cards .= flow_render_dashboard_provider_card($provider, $hours, $start, $end, $selected_links, $peerusage, $showv6);
+    $cards .= flow_render_dashboard_provider_card($provider, $hours, $start, $end, $selected_links, $peerusage, $showv6, $statsfile);
 }
 
 flow_render_shell_start('Flow | Dashboard', 'dashboard');
-echo flow_render_hero('traffic board', 'Dashboard de consumo por plataforma', 'Painel executivo com foco em hyperscalers e plataformas de maior relevancia operacional para a borda.', $heroStats);
+echo flow_render_hero(
+    'traffic board',
+    'Dashboard de consumo por plataforma',
+    'Painel executivo com separação entre entrega remota por ASN, CDN local classificado e CDN compartilhado não classificado. Assim o sistema evita empurrar volume misturado para o provedor errado.',
+    $heroStats
+);
 
 echo '<div class="flow-grid">';
 echo '<div class="flow-stack">';
 echo flow_render_panel('Controles do dashboard', flow_render_filter_form($hours, $ntop, $selected_links, 'dashboard.php'), 'fa-sliders');
 echo flow_render_panel('Links monitorados', flow_render_legend_form($knownlinks, $selected_links, $hours, $ntop, 'dashboard.php'), 'fa-random');
+echo flow_render_panel(
+    'Regra de classificacao',
+    '<div class="flow-copy-block"><p>O bloco remoto soma ASN públicos do provedor. O bloco de CDN local classificado depende de homologação explícita. O bloco compartilhado mostra o restante da malha local que ainda não pode ser atribuído com segurança ao provedor.</p><p>Arquivo esperado: <strong>' . htmlspecialchars(flow_dashboard_local_profiles_path()) . '</strong></p></div>',
+    'fa-check-circle'
+);
 echo '</div>';
 echo '<div class="flow-stack">';
 echo flow_render_panel('Hyperscalers observados', '<div class="flow-provider-grid">' . $cards . '</div>', 'fa-dashboard');

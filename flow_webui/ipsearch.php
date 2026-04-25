@@ -256,6 +256,57 @@ function flow_build_export_url($ip, $mode, $hours, $link, $asn) {
     return $url;
 }
 
+function flow_query_open_db($dbPath, &$error = null) {
+    $error = null;
+
+    if (!is_file($dbPath)) {
+        $error = 'A base flow_events.db ainda nao existe neste ambiente.';
+        return null;
+    }
+
+    try {
+        $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
+        $db->busyTimeout(2000);
+        @$db->exec('PRAGMA busy_timeout = 2000');
+        return $db;
+    } catch (Exception $exception) {
+        $error = 'Nao foi possivel abrir a base de eventos por IP.';
+        return null;
+    }
+}
+
+function flow_query_bind_filters($stmt, $windowStart, $queryIp, $queryLink, $queryAsn) {
+    if (!$stmt) {
+        return false;
+    }
+
+    $stmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
+    $stmt->bindValue(':ip_filter', $queryIp, SQLITE3_TEXT);
+    if ($queryLink !== '') {
+        $stmt->bindValue(':link_tag', $queryLink, SQLITE3_TEXT);
+    }
+    if ($queryAsn !== '') {
+        $stmt->bindValue(':asn_filter', (int)$queryAsn, SQLITE3_INTEGER);
+    }
+
+    return true;
+}
+
+function flow_query_execute_assoc($stmt, &$error, $message) {
+    if (!$stmt) {
+        $error = $message;
+        return false;
+    }
+
+    $result = @$stmt->execute();
+    if ($result === false) {
+        $error = $message;
+        return false;
+    }
+
+    return $result;
+}
+
 function flow_render_pdf_document($queryIp, $queryMode, $queryHours, $queryLink, $queryAsn, $summaryCards, $chartHtml, $topCounterpartsHtml, $recentEventsHtml) {
     $title = 'Flow Observatory | IP Lens Report';
     $modeLabel = strtoupper($queryMode);
@@ -458,24 +509,29 @@ function flow_query_pipeline_snapshot($dbPath) {
         return $snapshot;
     }
 
-    try {
-        $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
-    } catch (Exception $exception) {
+    $dbError = null;
+    $db = flow_query_open_db($dbPath, $dbError);
+    if (!$db) {
         $snapshot['db_ready'] = false;
         return $snapshot;
     }
 
-    $row = $db->querySingle('SELECT COUNT(*) AS total_rows, MAX(minute_ts) AS last_seen FROM flow_events', true);
+    $row = @$db->querySingle('SELECT COUNT(*) AS total_rows, MAX(minute_ts) AS last_seen FROM flow_events', true);
     if (is_array($row)) {
         $snapshot['total_rows'] = isset($row['total_rows']) ? (int)$row['total_rows'] : 0;
         $snapshot['last_seen'] = isset($row['last_seen']) && $row['last_seen'] !== null ? (int)$row['last_seen'] : null;
     }
 
-    $recentStmt = $db->prepare('SELECT COUNT(*) AS recent_rows FROM flow_events WHERE minute_ts >= :start');
-    $recentStmt->bindValue(':start', time() - 3600, SQLITE3_INTEGER);
-    $recentRow = $recentStmt->execute()->fetchArray(SQLITE3_ASSOC);
-    if (is_array($recentRow)) {
-        $snapshot['recent_rows'] = isset($recentRow['recent_rows']) ? (int)$recentRow['recent_rows'] : 0;
+    $recentStmt = @$db->prepare('SELECT COUNT(*) AS recent_rows FROM flow_events WHERE minute_ts >= :start');
+    if ($recentStmt) {
+        $recentStmt->bindValue(':start', time() - 3600, SQLITE3_INTEGER);
+        $recentResult = @$recentStmt->execute();
+        if ($recentResult) {
+            $recentRow = $recentResult->fetchArray(SQLITE3_ASSOC);
+            if (is_array($recentRow)) {
+                $snapshot['recent_rows'] = isset($recentRow['recent_rows']) ? (int)$recentRow['recent_rows'] : 0;
+            }
+        }
     }
 
     $db->close();
@@ -523,177 +579,179 @@ if ($queryIp !== '') {
     } elseif (!$dbReady) {
         $searchError = 'A base flow_events.db ainda nao existe neste ambiente. Rode a corretiva do coletor e aguarde novas amostras.';
     } else {
-        $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
-        $db->createFunction('flow_ip_filter_match', 'flow_ip_matches_filter', 2);
-
-        $where = 'minute_ts >= :start';
-        if ($queryMode === 'src') {
-            $where .= ' AND flow_ip_filter_match(src_ip, :ip_filter) = 1';
-        } elseif ($queryMode === 'dst') {
-            $where .= ' AND flow_ip_filter_match(dst_ip, :ip_filter) = 1';
+        $dbError = '';
+        $db = flow_query_open_db($dbPath, $dbError);
+        if (!$db) {
+            $searchError = $dbError !== '' ? $dbError : 'Nao foi possivel abrir a base de eventos por IP.';
         } else {
-            $where .= ' AND (flow_ip_filter_match(src_ip, :ip_filter) = 1 OR flow_ip_filter_match(dst_ip, :ip_filter) = 1)';
-        }
-        if ($queryLink !== '') {
-            $where .= ' AND link_tag = :link_tag';
-        }
-        if ($queryAsn !== '') {
+            $db->createFunction('flow_ip_filter_match', 'flow_ip_matches_filter', 2);
+
+            $where = 'minute_ts >= :start';
             if ($queryMode === 'src') {
-                $where .= ' AND src_asn = :asn_filter';
+                $where .= ' AND flow_ip_filter_match(src_ip, :ip_filter) = 1';
             } elseif ($queryMode === 'dst') {
-                $where .= ' AND dst_asn = :asn_filter';
+                $where .= ' AND flow_ip_filter_match(dst_ip, :ip_filter) = 1';
             } else {
-                $where .= ' AND (src_asn = :asn_filter OR dst_asn = :asn_filter)';
+                $where .= ' AND (flow_ip_filter_match(src_ip, :ip_filter) = 1 OR flow_ip_filter_match(dst_ip, :ip_filter) = 1)';
             }
-        }
+            if ($queryLink !== '') {
+                $where .= ' AND link_tag = :link_tag';
+            }
+            if ($queryAsn !== '') {
+                if ($queryMode === 'src') {
+                    $where .= ' AND src_asn = :asn_filter';
+                } elseif ($queryMode === 'dst') {
+                    $where .= ' AND dst_asn = :asn_filter';
+                } else {
+                    $where .= ' AND (src_asn = :asn_filter OR dst_asn = :asn_filter)';
+                }
+            }
 
-        $summaryStmt = $db->prepare(
-            "SELECT
-                COALESCE(SUM(bytes), 0) AS total_bytes,
-                COALESCE(SUM(samples), 0) AS total_samples,
-                COUNT(DISTINCT link_tag) AS link_count,
-                COUNT(DISTINCT CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_ip ELSE src_ip END) AS counterpart_count,
-                COUNT(*) AS matched_rows
-             FROM flow_events
-             WHERE {$where}"
-        );
-        $summaryStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
-        $summaryStmt->bindValue(':ip_filter', $queryIp, SQLITE3_TEXT);
-        if ($queryLink !== '') {
-            $summaryStmt->bindValue(':link_tag', $queryLink, SQLITE3_TEXT);
-        }
-        if ($queryAsn !== '') {
-            $summaryStmt->bindValue(':asn_filter', (int)$queryAsn, SQLITE3_INTEGER);
-        }
-        $summary = $summaryStmt->execute()->fetchArray(SQLITE3_ASSOC);
-
-        $summaryCards[] = array('label' => 'Bytes', 'value' => format_bytes((int)$summary['total_bytes']));
-        $summaryCards[] = array('label' => 'Amostras', 'value' => number_format((int)$summary['total_samples'], 0, ',', '.'));
-        $summaryCards[] = array('label' => 'Links', 'value' => (int)$summary['link_count']);
-        $summaryCards[] = array('label' => 'Contrapartes', 'value' => (int)$summary['counterpart_count']);
-        $summaryCards[] = array('label' => 'Linhas filtradas', 'value' => number_format((int)$summary['matched_rows'], 0, ',', '.'));
-        if ($queryLink !== '') {
-            $summaryCards[] = array('label' => 'Interface', 'value' => $queryLink);
-        }
-        if ($queryAsn !== '') {
-            $summaryCards[] = array('label' => 'ASN', 'value' => 'AS' . $queryAsn);
-        }
-
-        $timelineStmt = $db->prepare(
-            "SELECT minute_ts, SUM(bytes) AS total_bytes
-             FROM flow_events
-             WHERE {$where}
-             GROUP BY minute_ts
-             ORDER BY minute_ts"
-        );
-        $timelineStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
-        $timelineStmt->bindValue(':ip_filter', $queryIp, SQLITE3_TEXT);
-        if ($queryLink !== '') {
-            $timelineStmt->bindValue(':link_tag', $queryLink, SQLITE3_TEXT);
-        }
-        if ($queryAsn !== '') {
-            $timelineStmt->bindValue(':asn_filter', (int)$queryAsn, SQLITE3_INTEGER);
-        }
-        $timelineResult = $timelineStmt->execute();
-        $timelinePoints = array();
-        while ($row = $timelineResult->fetchArray(SQLITE3_ASSOC)) {
-            $timelinePoints[(int)$row['minute_ts']] = (int)$row['total_bytes'];
-        }
-        $chartHtml = flow_render_query_chart($timelinePoints);
-
-        $counterpartsStmt = $db->prepare(
-            "SELECT
-                CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_ip ELSE src_ip END AS counterpart_ip,
-                CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_asn ELSE src_asn END AS counterpart_asn,
-                SUM(bytes) AS total_bytes,
-                COUNT(DISTINCT link_tag) AS link_count,
-                MAX(minute_ts) AS last_seen
-             FROM flow_events
-             WHERE {$where}
-             GROUP BY counterpart_ip, counterpart_asn
-             ORDER BY total_bytes DESC
-             LIMIT 20"
-        );
-        $counterpartsStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
-        $counterpartsStmt->bindValue(':ip_filter', $queryIp, SQLITE3_TEXT);
-        if ($queryLink !== '') {
-            $counterpartsStmt->bindValue(':link_tag', $queryLink, SQLITE3_TEXT);
-        }
-        if ($queryAsn !== '') {
-            $counterpartsStmt->bindValue(':asn_filter', (int)$queryAsn, SQLITE3_INTEGER);
-        }
-        $counterpartsResult = $counterpartsStmt->execute();
-        $counterpartRows = array();
-        while ($row = $counterpartsResult->fetchArray(SQLITE3_ASSOC)) {
-            $counterpartRows[] = array(
-                '<span class="flow-pill">' . htmlspecialchars($row['counterpart_ip']) . '</span>',
-                flow_render_asn_link($row['counterpart_asn']),
-                htmlspecialchars(format_bytes((int)$row['total_bytes'])),
-                htmlspecialchars((string)$row['link_count']),
-                htmlspecialchars(flow_format_query_time($row['last_seen'])),
+            $queryFailureMessage = 'A base de eventos por IP esta ocupada no momento. Tente novamente em alguns segundos.';
+            $summary = array(
+                'total_bytes' => 0,
+                'total_samples' => 0,
+                'link_count' => 0,
+                'counterpart_count' => 0,
+                'matched_rows' => 0,
             );
-        }
-        $topCounterpartsHtml = flow_render_query_table(
-            array('Contraparte', 'ASN', 'Bytes', 'Links', 'Ultimo seen'),
-            $counterpartRows
-        );
 
-        $recentStmt = $db->prepare(
-            "SELECT
-                minute_ts,
-                link_tag,
-                direction,
-                ip_version,
-                src_ip,
-                src_asn,
-                dst_ip,
-                dst_asn,
-                SUM(bytes) AS total_bytes,
-                SUM(samples) AS total_samples
-             FROM flow_events
-             WHERE {$where}
-             GROUP BY minute_ts, link_tag, direction, ip_version, src_ip, src_asn, dst_ip, dst_asn
-             ORDER BY minute_ts DESC, total_bytes DESC
-             LIMIT 40"
-        );
-        $recentStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
-        $recentStmt->bindValue(':ip_filter', $queryIp, SQLITE3_TEXT);
-        if ($queryLink !== '') {
-            $recentStmt->bindValue(':link_tag', $queryLink, SQLITE3_TEXT);
-        }
-        if ($queryAsn !== '') {
-            $recentStmt->bindValue(':asn_filter', (int)$queryAsn, SQLITE3_INTEGER);
-        }
-        $recentResult = $recentStmt->execute();
-        $recentRows = array();
-        while ($row = $recentResult->fetchArray(SQLITE3_ASSOC)) {
-            $recentRows[] = array(
-                htmlspecialchars(flow_format_query_time($row['minute_ts'])),
-                flow_render_link_badge($row['link_tag']),
-                htmlspecialchars(strtoupper($row['direction'])),
-                'IPv' . htmlspecialchars($row['ip_version']),
-                flow_render_endpoint_cell($row['src_ip'], $row['src_asn']),
-                flow_render_endpoint_cell($row['dst_ip'], $row['dst_asn']),
-                htmlspecialchars(format_bytes((int)$row['total_bytes'])),
-                htmlspecialchars((string)$row['total_samples']),
+            $summaryStmt = @$db->prepare(
+                "SELECT
+                    COALESCE(SUM(bytes), 0) AS total_bytes,
+                    COALESCE(SUM(samples), 0) AS total_samples,
+                    COUNT(DISTINCT link_tag) AS link_count,
+                    COUNT(DISTINCT CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_ip ELSE src_ip END) AS counterpart_count,
+                    COUNT(*) AS matched_rows
+                 FROM flow_events
+                 WHERE {$where}"
             );
+            flow_query_bind_filters($summaryStmt, $windowStart, $queryIp, $queryLink, $queryAsn);
+            $summaryResult = flow_query_execute_assoc($summaryStmt, $searchError, $queryFailureMessage);
+            if ($summaryResult !== false) {
+                $summaryRow = $summaryResult->fetchArray(SQLITE3_ASSOC);
+                if (is_array($summaryRow)) {
+                    $summary = array_merge($summary, $summaryRow);
+                }
+
+                $summaryCards[] = array('label' => 'Bytes', 'value' => format_bytes((int)$summary['total_bytes']));
+                $summaryCards[] = array('label' => 'Amostras', 'value' => number_format((int)$summary['total_samples'], 0, ',', '.'));
+                $summaryCards[] = array('label' => 'Links', 'value' => (int)$summary['link_count']);
+                $summaryCards[] = array('label' => 'Contrapartes', 'value' => (int)$summary['counterpart_count']);
+                $summaryCards[] = array('label' => 'Linhas filtradas', 'value' => number_format((int)$summary['matched_rows'], 0, ',', '.'));
+                if ($queryLink !== '') {
+                    $summaryCards[] = array('label' => 'Interface', 'value' => $queryLink);
+                }
+                if ($queryAsn !== '') {
+                    $summaryCards[] = array('label' => 'ASN', 'value' => 'AS' . $queryAsn);
+                }
+
+                $timelineStmt = @$db->prepare(
+                    "SELECT minute_ts, SUM(bytes) AS total_bytes
+                     FROM flow_events
+                     WHERE {$where}
+                     GROUP BY minute_ts
+                     ORDER BY minute_ts"
+                );
+                flow_query_bind_filters($timelineStmt, $windowStart, $queryIp, $queryLink, $queryAsn);
+                $timelineResult = flow_query_execute_assoc($timelineStmt, $searchError, $queryFailureMessage);
+                if ($timelineResult !== false) {
+                    $timelinePoints = array();
+                    while ($row = $timelineResult->fetchArray(SQLITE3_ASSOC)) {
+                        $timelinePoints[(int)$row['minute_ts']] = (int)$row['total_bytes'];
+                    }
+                    $chartHtml = flow_render_query_chart($timelinePoints);
+                }
+
+                if ($searchError === '') {
+                    $counterpartsStmt = @$db->prepare(
+                        "SELECT
+                            CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_ip ELSE src_ip END AS counterpart_ip,
+                            CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_asn ELSE src_asn END AS counterpart_asn,
+                            SUM(bytes) AS total_bytes,
+                            COUNT(DISTINCT link_tag) AS link_count,
+                            MAX(minute_ts) AS last_seen
+                         FROM flow_events
+                         WHERE {$where}
+                         GROUP BY counterpart_ip, counterpart_asn
+                         ORDER BY total_bytes DESC
+                         LIMIT 20"
+                    );
+                    flow_query_bind_filters($counterpartsStmt, $windowStart, $queryIp, $queryLink, $queryAsn);
+                    $counterpartsResult = flow_query_execute_assoc($counterpartsStmt, $searchError, $queryFailureMessage);
+                    if ($counterpartsResult !== false) {
+                        $counterpartRows = array();
+                        while ($row = $counterpartsResult->fetchArray(SQLITE3_ASSOC)) {
+                            $counterpartRows[] = array(
+                                '<span class="flow-pill">' . htmlspecialchars($row['counterpart_ip']) . '</span>',
+                                flow_render_asn_link($row['counterpart_asn']),
+                                htmlspecialchars(format_bytes((int)$row['total_bytes'])),
+                                htmlspecialchars((string)$row['link_count']),
+                                htmlspecialchars(flow_format_query_time($row['last_seen'])),
+                            );
+                        }
+                        $topCounterpartsHtml = flow_render_query_table(
+                            array('Contraparte', 'ASN', 'Bytes', 'Links', 'Ultimo seen'),
+                            $counterpartRows
+                        );
+                    }
+                }
+
+                if ($searchError === '') {
+                    $recentStmt = @$db->prepare(
+                        "SELECT
+                            minute_ts,
+                            link_tag,
+                            direction,
+                            ip_version,
+                            src_ip,
+                            src_asn,
+                            dst_ip,
+                            dst_asn,
+                            SUM(bytes) AS total_bytes,
+                            SUM(samples) AS total_samples
+                         FROM flow_events
+                         WHERE {$where}
+                         GROUP BY minute_ts, link_tag, direction, ip_version, src_ip, src_asn, dst_ip, dst_asn
+                         ORDER BY minute_ts DESC, total_bytes DESC
+                         LIMIT 40"
+                    );
+                    flow_query_bind_filters($recentStmt, $windowStart, $queryIp, $queryLink, $queryAsn);
+                    $recentResult = flow_query_execute_assoc($recentStmt, $searchError, $queryFailureMessage);
+                    if ($recentResult !== false) {
+                        $recentRows = array();
+                        while ($row = $recentResult->fetchArray(SQLITE3_ASSOC)) {
+                            $recentRows[] = array(
+                                htmlspecialchars(flow_format_query_time($row['minute_ts'])),
+                                flow_render_link_badge($row['link_tag']),
+                                htmlspecialchars(strtoupper($row['direction'])),
+                                'IPv' . htmlspecialchars($row['ip_version']),
+                                flow_render_endpoint_cell($row['src_ip'], $row['src_asn']),
+                                flow_render_endpoint_cell($row['dst_ip'], $row['dst_asn']),
+                                htmlspecialchars(format_bytes((int)$row['total_bytes'])),
+                                htmlspecialchars((string)$row['total_samples']),
+                            );
+                        }
+                        $recentEventsHtml = flow_render_query_table(
+                            array('Minuto', 'Link', 'Direcao', 'IP', 'Origem', 'Destino', 'Bytes', 'Samples'),
+                            $recentRows
+                        );
+                    }
+                }
+
+                $insightsHtml = '<div class="flow-kpi-strip">'
+                    . '<div class="flow-kpi"><span>Lookup</span><strong>' . htmlspecialchars($queryIp) . '</strong></div>'
+                    . '<div class="flow-kpi"><span>Modo</span><strong>' . htmlspecialchars(strtoupper($queryMode)) . '</strong></div>'
+                    . '<div class="flow-kpi"><span>Interface</span><strong>' . htmlspecialchars($queryLink !== '' ? $queryLink : 'Todas') . '</strong></div>'
+                    . '<div class="flow-kpi"><span>ASN</span><strong>' . htmlspecialchars($queryAsn !== '' ? 'AS' . $queryAsn : 'Todos') . '</strong></div>'
+                    . '<div class="flow-kpi"><span>Base</span><strong>' . htmlspecialchars(basename($dbPath)) . '</strong></div>'
+                    . '<div class="flow-kpi"><span>Linhas filtradas</span><strong>' . htmlspecialchars(number_format((int)$summary['matched_rows'], 0, ',', '.')) . '</strong></div>'
+                    . '<div class="flow-kpi"><span>Ultima amostra global</span><strong>' . htmlspecialchars($pipeline['last_seen'] ? flow_format_query_time($pipeline['last_seen']) : 'sem dados') . '</strong></div>'
+                    . '</div>';
+            }
+
+            $db->close();
         }
-        $recentEventsHtml = flow_render_query_table(
-            array('Minuto', 'Link', 'Direcao', 'IP', 'Origem', 'Destino', 'Bytes', 'Samples'),
-            $recentRows
-        );
-
-        $insightsHtml = '<div class="flow-kpi-strip">'
-            . '<div class="flow-kpi"><span>Lookup</span><strong>' . htmlspecialchars($queryIp) . '</strong></div>'
-            . '<div class="flow-kpi"><span>Modo</span><strong>' . htmlspecialchars(strtoupper($queryMode)) . '</strong></div>'
-            . '<div class="flow-kpi"><span>Interface</span><strong>' . htmlspecialchars($queryLink !== '' ? $queryLink : 'Todas') . '</strong></div>'
-            . '<div class="flow-kpi"><span>ASN</span><strong>' . htmlspecialchars($queryAsn !== '' ? 'AS' . $queryAsn : 'Todos') . '</strong></div>'
-            . '<div class="flow-kpi"><span>Base</span><strong>' . htmlspecialchars(basename($dbPath)) . '</strong></div>'
-            . '<div class="flow-kpi"><span>Linhas filtradas</span><strong>' . htmlspecialchars(number_format((int)$summary['matched_rows'], 0, ',', '.')) . '</strong></div>'
-            . '<div class="flow-kpi"><span>Ultima amostra global</span><strong>' . htmlspecialchars($pipeline['last_seen'] ? flow_format_query_time($pipeline['last_seen']) : 'sem dados') . '</strong></div>'
-            . '</div>';
-
-        $db->close();
     }
 }
 

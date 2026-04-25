@@ -19,7 +19,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!file_exists(flow_auth_db_path())) {
         $error = 'Base de autenticacao nao encontrada. Inicialize o acesso pelo instalador.';
     } elseif (flow_auth_login($username, $password)) {
-        flow_auth_audit('auth.login.success', 'Login concluido com redirecionamento para ' . $next, $username, $username, flow_auth_current_user()['role']);
+        $currentUser = flow_auth_current_user();
+        $currentRole = (is_array($currentUser) && isset($currentUser['role'])) ? $currentUser['role'] : 'authenticated';
+        flow_auth_audit('auth.login.success', 'Login concluido com redirecionamento para ' . $next, $username, $username, $currentRole);
         header('Location: ' . ($next !== '' ? $next : 'index.php'));
         exit;
     } else {
