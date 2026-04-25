@@ -382,11 +382,11 @@ patch_pages() {
   find "${WWW_DIR}" -maxdepth 1 -type f -name '*.php' -exec sed -i 's|AS-Stats |Flow |g' {} +
 
   if [[ -f "${WWW_DIR}/index.php" ]]; then
-    sed -i "s|content_header('Top ' \\. \$ntop \\. ' AS', '(\\.\\$label\\.)')|content_header('Radar de ' . \$ntop . ' AS', '(' . \$label . ')')|" "${WWW_DIR}/index.php"
+    sed -i 's|content_header('"'"'Top '"'"' \. $ntop \. '"'"' AS'"'"', '"'"'('"'"'.$label.'"'"')'"'"')|content_header('"'"'Radar de '"'"' . $ntop . '"'"' AS'"'"', '"'"'('"'"' . $label . '"'"')'"'"')|' "${WWW_DIR}/index.php"
   fi
 
   if [[ -f "${WWW_DIR}/linkusage.php" ]]; then
-    sed -i "s|content_header('Top 10 AS - por uso do link', '(' \\. \\$label \\. ')')|content_header('Fluxo por link', '(' . \$label . ')')|" "${WWW_DIR}/linkusage.php"
+    sed -i 's|content_header('"'"'Top 10 AS - por uso do link'"'"', '"'"'('"'"' . $label . '"'"')'"'"')|content_header('"'"'Fluxo por link'"'"', '"'"'('"'"' . $label . '"'"')'"'"')|' "${WWW_DIR}/linkusage.php"
     sed -i 's|Uso do link|Fluxo do link|g' "${WWW_DIR}/linkusage.php"
   fi
 
