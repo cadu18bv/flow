@@ -16,8 +16,61 @@ function flow_query_hours_options() {
     );
 }
 
+function flow_query_timezone_name() {
+    static $timezoneName = null;
+
+    if ($timezoneName !== null) {
+        return $timezoneName;
+    }
+
+    $candidates = array();
+
+    $envTimezone = getenv('TZ');
+    if ($envTimezone) {
+        $candidates[] = trim($envTimezone);
+    }
+
+    $iniTimezone = ini_get('date.timezone');
+    if ($iniTimezone) {
+        $candidates[] = trim($iniTimezone);
+    }
+
+    if (DIRECTORY_SEPARATOR === '/' && is_readable('/etc/timezone')) {
+        $fileTimezone = trim((string)@file_get_contents('/etc/timezone'));
+        if ($fileTimezone !== '') {
+            $candidates[] = $fileTimezone;
+        }
+    }
+
+    $candidates[] = date_default_timezone_get();
+    $candidates[] = 'America/Fortaleza';
+    $candidates[] = 'America/Sao_Paulo';
+
+    foreach ($candidates as $candidate) {
+        if (!$candidate) {
+            continue;
+        }
+
+        try {
+            $timezone = new DateTimeZone($candidate);
+            $timezoneName = $timezone->getName();
+            return $timezoneName;
+        } catch (Exception $exception) {
+        }
+    }
+
+    $timezoneName = 'UTC';
+    return $timezoneName;
+}
+
+function flow_format_timestamp_local($timestamp, $format) {
+    $date = new DateTimeImmutable('@' . (int)$timestamp);
+    $date = $date->setTimezone(new DateTimeZone(flow_query_timezone_name()));
+    return $date->format($format);
+}
+
 function flow_format_query_time($timestamp) {
-    return date('d/m H:i', (int)$timestamp);
+    return flow_format_timestamp_local($timestamp, 'd/m H:i');
 }
 
 function flow_render_select($name, $value, $options) {
@@ -48,6 +101,135 @@ function flow_render_mode_switch($current) {
     }
     $html .= '</div>';
     return $html;
+}
+
+function flow_query_link_labels() {
+    static $labels = null;
+
+    if ($labels !== null) {
+        return $labels;
+    }
+
+    $labels = array();
+    if (!function_exists('getknownlinks')) {
+        return $labels;
+    }
+
+    $knownlinks = getknownlinks();
+    if (!is_array($knownlinks)) {
+        return $labels;
+    }
+
+    foreach ($knownlinks as $link) {
+        if (!isset($link['tag'])) {
+            continue;
+        }
+        $tag = trim((string)$link['tag']);
+        if ($tag === '') {
+            continue;
+        }
+        $labels[$tag] = isset($link['descr']) ? trim((string)$link['descr']) : '';
+    }
+
+    return $labels;
+}
+
+function flow_render_link_badge($tag) {
+    $labels = flow_query_link_labels();
+    $tagText = htmlspecialchars((string)$tag);
+    $description = isset($labels[$tag]) ? trim((string)$labels[$tag]) : '';
+
+    if ($description !== '' && strcasecmp($description, (string)$tag) !== 0) {
+        return '<div class="flow-link-cell">'
+            . '<span class="flow-pill">' . $tagText . '</span>'
+            . '<small>' . htmlspecialchars($description) . '</small>'
+            . '</div>';
+    }
+
+    return '<span class="flow-pill">' . $tagText . '</span>';
+}
+
+function flow_build_export_url($ip, $mode, $hours) {
+    return 'ipsearch.php?ip=' . rawurlencode($ip) . '&mode=' . rawurlencode($mode) . '&hours=' . rawurlencode($hours) . '&export=pdf';
+}
+
+function flow_render_pdf_document($queryIp, $queryMode, $queryHours, $summaryCards, $chartHtml, $topCounterpartsHtml, $recentEventsHtml) {
+    $title = 'Flow Observatory | IP Lens Report';
+    $modeLabel = strtoupper($queryMode);
+    $windowLabel = htmlspecialchars(flow_query_hours_options()[$queryHours]);
+    $generatedAt = htmlspecialchars(flow_format_timestamp_local(time(), 'd/m/Y H:i:s'));
+    $timezoneName = htmlspecialchars(flow_query_timezone_name());
+    $summaryHtml = '';
+    foreach ($summaryCards as $card) {
+        $summaryHtml .= '<div class="report-stat"><span>' . htmlspecialchars($card['label']) . '</span><strong>' . htmlspecialchars($card['value']) . '</strong></div>';
+    }
+
+    echo <<<HTML
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>{$title}</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 24px; color: #0f1720; }
+    .report-header { margin-bottom: 24px; }
+    .report-header h1 { margin: 0 0 8px; font-size: 28px; }
+    .report-header p { margin: 0; color: #4c6073; font-size: 14px; }
+    .report-meta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+    .report-chip { padding: 8px 12px; border: 1px solid #bfd4e5; border-radius: 999px; font-size: 12px; color: #20435f; background: #f5fbff; }
+    .report-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 20px 0 24px; }
+    .report-stat { padding: 14px; border: 1px solid #d7e6f2; border-radius: 14px; background: #fbfdff; }
+    .report-stat span { display: block; margin-bottom: 6px; color: #60788f; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    .report-stat strong { font-size: 20px; }
+    .report-section { margin-bottom: 28px; }
+    .report-section h2 { margin: 0 0 12px; font-size: 18px; }
+    .flow-svg-chart { border: 1px solid #d7e6f2; border-radius: 16px; overflow: hidden; }
+    .flow-table-wrap { overflow: visible; border: 1px solid #d7e6f2; border-radius: 16px; }
+    .flow-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .flow-table th, .flow-table td { padding: 10px 12px; border-bottom: 1px solid #e4eef6; text-align: left; vertical-align: top; }
+    .flow-table th { background: #f6fbff; color: #54718a; text-transform: uppercase; font-size: 11px; letter-spacing: .06em; }
+    .flow-pill { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #edf8ff; border: 1px solid #cce4f5; font-size: 11px; color: #1d4b6d; }
+    .flow-empty-state { padding: 16px; border: 1px dashed #bfd4e5; border-radius: 14px; color: #5b7388; background: #fbfdff; }
+    .report-actions { margin-bottom: 18px; }
+    .report-actions button { padding: 10px 16px; border-radius: 10px; border: 1px solid #0f5f84; background: #0f6e99; color: #fff; font-weight: 700; cursor: pointer; }
+    @media print {
+      .report-actions { display: none; }
+      body { margin: 0; }
+      .report-section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="report-actions">
+    <button onclick="window.print()">Salvar como PDF</button>
+  </div>
+  <header class="report-header">
+    <h1>Flow Observatory | IP Lens</h1>
+    <p>Relatorio operacional de consulta por IP origem/destino.</p>
+    <div class="report-meta">
+      <span class="report-chip">IP: {$queryIp}</span>
+      <span class="report-chip">Modo: {$modeLabel}</span>
+      <span class="report-chip">Janela: {$windowLabel}</span>
+      <span class="report-chip">Gerado em: {$generatedAt}</span>
+      <span class="report-chip">Timezone: {$timezoneName}</span>
+    </div>
+  </header>
+  <section class="report-stats">{$summaryHtml}</section>
+  <section class="report-section">
+    <h2>Serie temporal</h2>
+    {$chartHtml}
+  </section>
+  <section class="report-section">
+    <h2>Top contrapartes</h2>
+    {$topCounterpartsHtml}
+  </section>
+  <section class="report-section">
+    <h2>Eventos recentes</h2>
+    {$recentEventsHtml}
+  </section>
+</body>
+</html>
+HTML;
 }
 
 function flow_render_query_chart($points) {
@@ -160,6 +342,7 @@ function flow_render_query_table($headers, $rows) {
 $queryIp = isset($_GET['ip']) ? trim($_GET['ip']) : '';
 $queryMode = isset($_GET['mode']) ? $_GET['mode'] : 'any';
 $queryHours = isset($_GET['hours']) ? (int)$_GET['hours'] : 24;
+$exportPdf = isset($_GET['export']) && $_GET['export'] === 'pdf';
 $queryHours = array_key_exists($queryHours, flow_query_hours_options()) ? $queryHours : 24;
 $dbPath = flow_query_db_path();
 $dbReady = file_exists($dbPath);
@@ -284,7 +467,7 @@ if ($queryIp !== '') {
         while ($row = $recentResult->fetchArray(SQLITE3_ASSOC)) {
             $recentRows[] = array(
                 htmlspecialchars(flow_format_query_time($row['minute_ts'])),
-                '<span class="flow-pill">' . htmlspecialchars($row['link_tag']) . '</span>',
+                flow_render_link_badge($row['link_tag']),
                 htmlspecialchars(strtoupper($row['direction'])),
                 'IPv' . htmlspecialchars($row['ip_version']),
                 htmlspecialchars($row['src_ip']) . ' <small>AS' . htmlspecialchars($row['src_asn']) . '</small>',
@@ -308,6 +491,23 @@ if ($queryIp !== '') {
     }
 }
 
+if ($exportPdf) {
+    if ($queryIp === '' || $searchError !== '') {
+        echo 'Nao foi possivel gerar o relatorio PDF com os parametros atuais.';
+        exit;
+    }
+    flow_render_pdf_document(
+        htmlspecialchars($queryIp),
+        $queryMode,
+        $queryHours,
+        $summaryCards,
+        $chartHtml,
+        $topCounterpartsHtml,
+        $recentEventsHtml
+    );
+    exit;
+}
+
 flow_render_shell_start('Flow | IP Lens', 'ipsearch');
 echo flow_render_hero(
     'ip lens',
@@ -321,13 +521,20 @@ $form = '<form method="get" action="ipsearch.php" class="flow-form-stack flow-se
     . flow_render_mode_switch($queryMode)
     . '<div class="flow-inline-form flow-search-row">'
     . '<input class="flow-input flow-input-xl flow-search-ip" type="text" name="ip" value="' . htmlspecialchars($queryIp) . '" placeholder="Ex.: 8.8.8.8 ou 2800:3f0:4001:..." />'
+    . '<div class="flow-search-tools">'
     . str_replace('class="flow-input"', 'class="flow-input flow-search-hours"', flow_render_select('hours', $queryHours, flow_query_hours_options()))
     . '<button class="flow-button flow-button-xl flow-search-submit" type="submit">Investigar</button>'
+    . '</div>'
     . '</div>'
     . '</form>';
 
 if ($searchError !== '') {
     $form .= '<div class="flow-inline-alert">' . htmlspecialchars($searchError) . '</div>';
+} elseif ($queryIp !== '') {
+    $form .= '<div class="flow-search-actions">'
+        . '<a class="flow-button flow-button-ghost flow-button-export" href="' . htmlspecialchars(flow_build_export_url($queryIp, $queryMode, $queryHours)) . '" target="_blank" rel="noopener noreferrer">Exportar PDF</a>'
+        . '<span class="flow-search-hint">Abre um relatorio limpo para salvar em PDF com o filtro atual.</span>'
+        . '</div>';
 }
 
 echo '<div class="flow-grid">';

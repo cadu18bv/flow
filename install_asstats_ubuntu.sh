@@ -24,6 +24,7 @@ ASSTATS_EXPORTER_HOST="${ASSTATS_EXPORTER_HOST:-}"
 ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
 ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-128}"
 ASSTATS_FLOW_RETENTION_DAYS="${ASSTATS_FLOW_RETENTION_DAYS:-14}"
+ASSTATS_TIMEZONE="${ASSTATS_TIMEZONE:-}"
 ASSTATS_ACTION="${ASSTATS_ACTION:-}"
 RAW_WALK_FILE=""
 
@@ -88,12 +89,83 @@ prompt_action() {
   esac
 }
 
+detect_current_timezone() {
+  local current_timezone=""
+
+  if command -v timedatectl >/dev/null 2>&1; then
+    current_timezone="$(timedatectl show --property=Timezone --value 2>/dev/null || true)"
+  fi
+
+  if [[ -z "${current_timezone}" && -r /etc/timezone ]]; then
+    current_timezone="$(tr -d '\r' < /etc/timezone | head -n 1 | xargs || true)"
+  fi
+
+  if [[ -z "${current_timezone}" ]]; then
+    current_timezone="America/Fortaleza"
+  fi
+
+  printf '%s' "${current_timezone}"
+}
+
+prompt_timezone() {
+  local current_timezone selected_timezone
+  current_timezone="$(detect_current_timezone)"
+
+  if [[ -n "${ASSTATS_TIMEZONE}" ]]; then
+    info "Timezone predefinido detectado: ${ASSTATS_TIMEZONE}"
+  else
+    printf "\n"
+    printf "Timezone operacional do Flow Observatory\n"
+    printf "Exemplos: America/Fortaleza, America/Sao_Paulo, UTC\n"
+    read -r -p "Timezone [${current_timezone}]: " selected_timezone
+    ASSTATS_TIMEZONE="${selected_timezone:-${current_timezone}}"
+  fi
+
+  if ! { timedatectl list-timezones 2>/dev/null | grep -Fxq "${ASSTATS_TIMEZONE}"; } \
+    && [[ ! -e "/usr/share/zoneinfo/${ASSTATS_TIMEZONE}" ]]; then
+    fail "Timezone invalido: ${ASSTATS_TIMEZONE}"
+  fi
+}
+
+apply_timezone() {
+  local php_timezone_file timezone_dir
+
+  [[ -n "${ASSTATS_TIMEZONE}" ]] || fail "Timezone nao definido"
+
+  info "Aplicando timezone ${ASSTATS_TIMEZONE}"
+
+  if command -v timedatectl >/dev/null 2>&1; then
+    timedatectl set-timezone "${ASSTATS_TIMEZONE}" || true
+  fi
+
+  if [[ -w /etc/timezone || ! -e /etc/timezone ]]; then
+    printf '%s\n' "${ASSTATS_TIMEZONE}" > /etc/timezone
+  fi
+
+  if [[ -e "/usr/share/zoneinfo/${ASSTATS_TIMEZONE}" ]]; then
+    ln -snf "/usr/share/zoneinfo/${ASSTATS_TIMEZONE}" /etc/localtime
+  fi
+
+  for timezone_dir in /etc/php/*/apache2/conf.d /etc/php/*/cli/conf.d; do
+    [[ -d "${timezone_dir}" ]] || continue
+    php_timezone_file="${timezone_dir}/99-flow-timezone.ini"
+    cat > "${php_timezone_file}" <<EOF
+; Managed by Flow Observatory installer
+date.timezone = ${ASSTATS_TIMEZONE}
+EOF
+  done
+
+  systemctl restart apache2 >/dev/null 2>&1 || true
+}
+
 run_theme_upgrade() {
   local theme_script
   theme_script="${SCRIPT_DIR}/apply_flow_full_customization.sh"
   [[ -f "${theme_script}" ]] || fail "Script de customizacao nao encontrado: ${theme_script}"
   [[ -d "${PROJECT_DIR}" ]] || fail "Projeto nao encontrado em ${PROJECT_DIR}"
 
+  prompt_timezone
+  apply_timezone
   info "Aplicando tema, corretivas do coletor e recursos flow em instalacao existente"
   bash "${theme_script}" "${PROJECT_DIR}" "${ASSTATS_WEB_ALIAS}"
 }
@@ -1017,6 +1089,7 @@ ASSTATS_SNMP_COMMUNITY=${ASSTATS_SNMP_COMMUNITY}
 ASSTATS_SAMPLING_RATE=${ASSTATS_SAMPLING_RATE}
 ASSTATS_FLOW_DB=${PROJECT_DIR}/asstats/flow_events.db
 ASSTATS_FLOW_RETENTION_DAYS=${ASSTATS_FLOW_RETENTION_DAYS}
+ASSTATS_TIMEZONE=${ASSTATS_TIMEZONE}
 EOF
 
   cat > /usr/local/bin/asstatsd-wrapper.sh <<'EOF'
@@ -1364,6 +1437,7 @@ Instalacao concluida.
 Ubuntu detectado: ${UBUNTU_NAME} (${UBUNTU_CODENAME})
 Projeto: ${PROJECT_DIR}
 Log: ${LOG_FILE}
+Timezone: ${ASSTATS_TIMEZONE}
 
 Web:
   http://IP_DO_SERVIDOR/${ASSTATS_WEB_ALIAS}
@@ -1423,8 +1497,10 @@ main() {
 
   detect_ubuntu
   preflight
+  prompt_timezone
   configure_repos
   install_packages
+  apply_timezone
   install_perl_modules
   install_project
   configure_snmp

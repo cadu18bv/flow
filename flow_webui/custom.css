@@ -374,6 +374,13 @@ a:focus {
   min-width: 320px;
 }
 
+.flow-search-tools {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
 .flow-search-hours {
   flex: 0 0 160px;
   min-width: 140px;
@@ -381,6 +388,27 @@ a:focus {
 
 .flow-search-submit {
   flex: 0 0 180px;
+}
+
+.flow-search-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.flow-button-export {
+  min-width: 190px;
+  justify-content: center;
+  text-align: center;
+  text-decoration: none;
+}
+
+.flow-search-hint {
+  color: var(--flow-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .flow-legend-grid {
@@ -582,6 +610,18 @@ a:focus {
   text-transform: uppercase;
 }
 
+.flow-link-cell {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.flow-link-cell small {
+  color: var(--flow-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .flow-table-wrap {
   overflow-x: auto;
   border: 1px solid rgba(77, 212, 255, 0.08);
@@ -715,9 +755,16 @@ a:focus {
     flex-direction: column;
   }
 
+  .flow-search-tools,
+  .flow-search-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .flow-search-ip,
   .flow-search-hours,
-  .flow-search-submit {
+  .flow-search-submit,
+  .flow-button-export {
     min-width: 0;
     flex: 1 1 auto;
   }

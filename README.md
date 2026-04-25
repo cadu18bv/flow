@@ -46,6 +46,8 @@ O instalador oferece 3 operacoes:
 - aplicar tema e corretivas em uma instalacao existente
 - adicionar mais um roteador/exportador no flow
 
+Durante `install` e `theme`, o script tambem pergunta qual timezone deve ser usado no ambiente. Esse ajuste e aplicado no sistema e no PHP/Apache para manter a interface e os relatorios no horario esperado.
+
 Tambem e possivel chamar direto:
 
 Instalacao completa:
@@ -166,6 +168,7 @@ sudo ASSTATS_PORT_NETFLOW=9000 \
      ASSTATS_PORT_SFLOW=6343 \
      ASSTATS_MY_ASN=1234 \
      ASSTATS_SAMPLING_RATE=128 \
+     ASSTATS_TIMEZONE=America/Fortaleza \
      ASSTATS_WEB_ALIAS=flow \
      ASSTATS_FLOW_RETENTION_DAYS=14 \
      ASSTATS_ACTION=install \
@@ -177,6 +180,7 @@ Padroes:
 - `ASSTATS_PORT_NETFLOW=9000`
 - `ASSTATS_PORT_SFLOW=6343`
 - `ASSTATS_SAMPLING_RATE=128`
+- `ASSTATS_TIMEZONE` usa o timezone atual do servidor como padrao
 - `ASSTATS_WEB_ALIAS=flow`
 - `ASSTATS_FLOW_RETENTION_DAYS=14`
 
