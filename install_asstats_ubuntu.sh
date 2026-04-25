@@ -860,11 +860,10 @@ apply_flow_collector_patch() {
   [[ -f "${PROJECT_DIR}/bin/asstatd.pl" ]] || fail "Arquivo do coletor nao encontrado em ${PROJECT_DIR}/bin/asstatd.pl"
 
   if grep -q "flow_events" "${PROJECT_DIR}/bin/asstatd.pl" && grep -q "getopts('r:p:P:k:a:nm:q:R:'" "${PROJECT_DIR}/bin/asstatd.pl"; then
-    info "Coletor ja possui a extensao da base paralela por IP"
-    return
+    info "Atualizando extensao do coletor por IP para modo WAL/anti-lock"
+  else
+    info "Aplicando extensao do coletor para base paralela por IP"
   fi
-
-  info "Aplicando extensao do coletor para base paralela por IP"
   python3 "${COLLECTOR_PATCHER}" "${PROJECT_DIR}/bin/asstatd.pl"
   chmod 0755 "${PROJECT_DIR}/bin/asstatd.pl"
 }
@@ -1593,6 +1592,31 @@ case "${action}" in
     systemctl start asstats-extract.service || true
     echo "Coleta reiniciada e extrator acionado."
     ;;
+  optimize-flow-db)
+    systemctl stop asstatsd.service || true
+    if command -v sqlite3 >/dev/null 2>&1 && [[ -f "${FLOW_DB}" ]]; then
+      sqlite3 "${FLOW_DB}" <<'SQL'
+PRAGMA busy_timeout = 10000;
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+CREATE INDEX IF NOT EXISTS idx_flow_events_minute ON flow_events (minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_src_ip ON flow_events (src_ip, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_dst_ip ON flow_events (dst_ip, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_link_time ON flow_events (link_tag, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_src_asn_time ON flow_events (src_asn, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_dst_asn_time ON flow_events (dst_asn, minute_ts);
+CREATE INDEX IF NOT EXISTS idx_flow_events_link_ipver_time ON flow_events (link_tag, ip_version, minute_ts);
+ANALYZE;
+PRAGMA wal_checkpoint(TRUNCATE);
+SQL
+      chown root:www-data "${FLOW_DB}" "${FLOW_DB}-wal" "${FLOW_DB}-shm" 2>/dev/null || true
+      chmod 0664 "${FLOW_DB}" "${FLOW_DB}-wal" "${FLOW_DB}-shm" 2>/dev/null || true
+      echo "flow_events.db otimizado em WAL."
+    else
+      echo "sqlite3 ausente ou flow_events.db ainda nao existe."
+    fi
+    systemctl start asstatsd.service || true
+    ;;
   reset-collection)
     systemctl stop asstatsd.service
     systemctl stop asstats-extract.timer || true
@@ -1649,7 +1673,7 @@ case "${action}" in
     fi
     ;;
   *)
-    echo "Uso: $0 {refresh-collection|reset-collection|tail-collector-log|tail-extractor-log|tail-apache-log|validate-flow}" >&2
+    echo "Uso: $0 {refresh-collection|optimize-flow-db|reset-collection|tail-collector-log|tail-extractor-log|tail-apache-log|validate-flow}" >&2
     exit 1
     ;;
 esac

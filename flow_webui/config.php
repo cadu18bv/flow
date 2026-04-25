@@ -250,7 +250,7 @@ function flow_run_maintenance_action($action) {
         return array(false, "Helper de manutencao nao encontrado em {$helper}");
     }
 
-    $allowed = array('refresh-collection', 'reset-collection', 'tail-collector-log', 'tail-extractor-log', 'tail-apache-log', 'validate-flow');
+    $allowed = array('refresh-collection', 'optimize-flow-db', 'reset-collection', 'tail-collector-log', 'tail-extractor-log', 'tail-apache-log', 'validate-flow');
     if (!in_array($action, $allowed, true)) {
         return array(false, 'Acao de manutencao invalida.');
     }
@@ -531,6 +531,16 @@ function flow_config_handle_post() {
             }
             break;
 
+        case 'optimize_flow_db':
+            list($ok, $payload) = flow_run_maintenance_action('optimize-flow-db');
+            if (!$ok) {
+                flow_auth_set_flash($payload, 'error');
+            } else {
+                flow_auth_audit('maintenance.optimize_flow_db', 'Banco flow_events otimizado em WAL pelo painel');
+                flow_auth_set_flash('Otimizacao do flow_events executada: ' . $payload, 'success');
+            }
+            break;
+
         case 'create_user':
             $username = trim((string)($_POST['username'] ?? ''));
             $role = trim((string)($_POST['role'] ?? 'read'));
@@ -780,6 +790,11 @@ $maintenanceBody .= '<form method="post" class="flow-inline-form">';
 $maintenanceBody .= '<input type="hidden" name="action" value="validate_flow">';
 $maintenanceBody .= '<button class="flow-button flow-button-ghost" type="submit">Validar chegada de flow</button>';
 $maintenanceBody .= '<span class="flow-search-hint">Executa checagem de portas, servico e captura rapida de pacotes UDP.</span>';
+$maintenanceBody .= '</form>';
+$maintenanceBody .= '<form method="post" class="flow-inline-form">';
+$maintenanceBody .= '<input type="hidden" name="action" value="optimize_flow_db">';
+$maintenanceBody .= '<button class="flow-button flow-button-ghost" type="submit">Otimizar flow_events</button>';
+$maintenanceBody .= '<span class="flow-search-hint">Ativa WAL, cria indices e faz ANALYZE para reduzir lock/lentidao.</span>';
 $maintenanceBody .= '</form>';
 if (flow_auth_has_role(array('master'))) {
     $maintenanceBody .= '<form method="post" class="flow-inline-form">';

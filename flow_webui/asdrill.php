@@ -269,6 +269,9 @@ $title = 'Drilldown por ASN';
 
 if ($queryAs > 0 && is_file($dbPath)) {
     $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
+    $db->busyTimeout(1000);
+    @$db->exec('PRAGMA busy_timeout = 1000');
+    @$db->exec('PRAGMA query_only = ON');
     $linkConditions = array();
     foreach ($selectedLinks as $index => $tag) {
         $placeholder = ':link' . $index;

@@ -266,8 +266,9 @@ function flow_query_open_db($dbPath, &$error = null) {
 
     try {
         $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
-        $db->busyTimeout(2000);
-        @$db->exec('PRAGMA busy_timeout = 2000');
+        $db->busyTimeout(1000);
+        @$db->exec('PRAGMA busy_timeout = 1000');
+        @$db->exec('PRAGMA query_only = ON');
         return $db;
     } catch (Exception $exception) {
         $error = 'Nao foi possivel abrir a base de eventos por IP.';

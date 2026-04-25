@@ -347,8 +347,9 @@ function flow_fetch_link_flow_stats($linkTag, $ipversion, $hours) {
 
     try {
         $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
-        $db->busyTimeout(2000);
-        @$db->exec('PRAGMA busy_timeout = 2000');
+        $db->busyTimeout(1000);
+        @$db->exec('PRAGMA busy_timeout = 1000');
+        @$db->exec('PRAGMA query_only = ON');
     } catch (Exception $exception) {
         return null;
     }

@@ -13,6 +13,12 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_all(text: str, old: str, new: str) -> str:
+    if old not in text:
+        return text
+    return text.replace(old, new)
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: flow_patch_collector.py /path/to/asstatd.pl")
@@ -95,7 +101,13 @@ sub init_flowdb {
 		RaiseError => 1,
 		PrintError => 0,
 		AutoCommit => 1,
+		sqlite_busy_timeout => 10000,
 	});
+
+	$dbh->do(q{PRAGMA busy_timeout = 10000});
+	$dbh->do(q{PRAGMA journal_mode = WAL});
+	$dbh->do(q{PRAGMA synchronous = NORMAL});
+	$dbh->do(q{PRAGMA temp_store = MEMORY});
 
 	$dbh->do(q{
 		CREATE TABLE IF NOT EXISTS flow_events (
@@ -130,6 +142,10 @@ sub init_flowdb {
 	$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_src_ip ON flow_events (src_ip, minute_ts)});
 	$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_dst_ip ON flow_events (dst_ip, minute_ts)});
 	$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_link_time ON flow_events (link_tag, minute_ts)});
+	$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_minute ON flow_events (minute_ts)});
+	$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_src_asn_time ON flow_events (src_asn, minute_ts)});
+	$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_dst_asn_time ON flow_events (dst_asn, minute_ts)});
+	$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_link_ipver_time ON flow_events (link_tag, ip_version, minute_ts)});
 	$dbh->disconnect;
 }
 
@@ -177,77 +193,91 @@ sub flush_flow_cache {
 		RaiseError => 1,
 		PrintError => 0,
 		AutoCommit => 0,
+		sqlite_busy_timeout => 10000,
 	});
 
-	my $sth = $dbh->prepare(q{
-		INSERT INTO flow_events (
-			minute_ts,
-			router_ip,
-			link_tag,
-			direction,
-			ip_version,
-			src_ip,
-			dst_ip,
-			src_asn,
-			dst_asn,
-			flow_type,
-			bytes,
-			samples,
-			updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (
-			minute_ts,
-			router_ip,
-			link_tag,
-			direction,
-			ip_version,
-			src_ip,
-			dst_ip,
-			src_asn,
-			dst_asn,
-			flow_type
-		)
-		DO UPDATE SET
-			bytes = bytes + excluded.bytes,
-			samples = samples + excluded.samples,
-			updated_at = excluded.updated_at
-	});
+	eval {
+		$dbh->do(q{PRAGMA busy_timeout = 10000});
+		$dbh->do(q{PRAGMA journal_mode = WAL});
+		$dbh->do(q{PRAGMA synchronous = NORMAL});
+	};
 
-	while (my ($entry, $row) = each(%$flowcache)) {
-		$sth->execute(
-			$row->{minute_ts},
-			$row->{router_ip},
-			$row->{link_tag},
-			$row->{direction},
-			$row->{ip_version},
-			$row->{src_ip},
-			$row->{dst_ip},
-			$row->{src_asn},
-			$row->{dst_asn},
-			$row->{flow_type},
-			$row->{bytes},
-			$row->{samples},
-			$row->{updated_at},
-		);
+	eval {
+		my $sth = $dbh->prepare(q{
+			INSERT INTO flow_events (
+				minute_ts,
+				router_ip,
+				link_tag,
+				direction,
+				ip_version,
+				src_ip,
+				dst_ip,
+				src_asn,
+				dst_asn,
+				flow_type,
+				bytes,
+				samples,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (
+				minute_ts,
+				router_ip,
+				link_tag,
+				direction,
+				ip_version,
+				src_ip,
+				dst_ip,
+				src_asn,
+				dst_asn,
+				flow_type
+			)
+			DO UPDATE SET
+				bytes = bytes + excluded.bytes,
+				samples = samples + excluded.samples,
+				updated_at = excluded.updated_at
+		});
+
+		while (my ($entry, $row) = each(%$flowcache)) {
+			$sth->execute(
+				$row->{minute_ts},
+				$row->{router_ip},
+				$row->{link_tag},
+				$row->{direction},
+				$row->{ip_version},
+				$row->{src_ip},
+				$row->{dst_ip},
+				$row->{src_asn},
+				$row->{dst_asn},
+				$row->{flow_type},
+				$row->{bytes},
+				$row->{samples},
+				$row->{updated_at},
+			);
+		}
+
+		if ($flowcache_cleanup_due && $flowdb_retention_days > 0) {
+			my $cutoff = time - ($flowdb_retention_days * 86400);
+			my $cutoff_minute = int($cutoff / 60) * 60;
+			$dbh->do("DELETE FROM flow_events WHERE minute_ts < ?", undef, $cutoff_minute);
+		}
+
+		$dbh->commit;
+	};
+	if ($@) {
+		eval { $dbh->rollback; };
+		warn "Flow query DB flush skipped: $@";
 	}
-
-	if ($flowcache_cleanup_due && $flowdb_retention_days > 0) {
-		my $cutoff = time - ($flowdb_retention_days * 86400);
-		my $cutoff_minute = int($cutoff / 60) * 60;
-		$dbh->do("DELETE FROM flow_events WHERE minute_ts < ?", undef, $cutoff_minute);
-	}
-
-	$dbh->commit;
 	$dbh->disconnect;
 }
 
 """
-    text = replace_once(
-        text,
-        "sub parse_netflow_v5 {\n",
-        helper_block + "sub parse_netflow_v5 {\n",
-        "helper block",
-    )
+    if "sub init_flowdb {" not in text:
+        text = replace_once(
+            text,
+            "sub parse_netflow_v5 {\n",
+            helper_block + "sub parse_netflow_v5 {\n",
+            "helper block",
+        )
 
     text = replace_once(
         text,
@@ -400,6 +430,87 @@ sub flush_flow_cache {
         "\twhile (my ($entry, $cacheent) = each(%$ascache)) {\n",
         "\tflush_flow_cache($force);\n\n\twhile (my ($entry, $cacheent) = each(%$ascache)) {\n",
         "flush flow cache in child",
+    )
+
+    # Upgrade systems that already had the IP pipeline patch without duplicating helpers.
+    text = replace_all(
+        text,
+        "AutoCommit => 1,\n\t});\n\n\t$dbh->do(q{\n\t\tCREATE TABLE IF NOT EXISTS flow_events",
+        "AutoCommit => 1,\n\t\tsqlite_busy_timeout => 10000,\n\t});\n\n\t$dbh->do(q{PRAGMA busy_timeout = 10000});\n\t$dbh->do(q{PRAGMA journal_mode = WAL});\n\t$dbh->do(q{PRAGMA synchronous = NORMAL});\n\t$dbh->do(q{PRAGMA temp_store = MEMORY});\n\n\t$dbh->do(q{\n\t\tCREATE TABLE IF NOT EXISTS flow_events",
+    )
+    text = replace_all(
+        text,
+        "\t$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_link_time ON flow_events (link_tag, minute_ts)});\n\t$dbh->disconnect;",
+        "\t$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_link_time ON flow_events (link_tag, minute_ts)});\n\t$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_minute ON flow_events (minute_ts)});\n\t$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_src_asn_time ON flow_events (src_asn, minute_ts)});\n\t$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_dst_asn_time ON flow_events (dst_asn, minute_ts)});\n\t$dbh->do(q{CREATE INDEX IF NOT EXISTS idx_flow_events_link_ipver_time ON flow_events (link_tag, ip_version, minute_ts)});\n\t$dbh->disconnect;",
+    )
+    text = replace_all(
+        text,
+        "AutoCommit => 0,\n\t});\n\n\tmy $sth = $dbh->prepare(q{",
+        "AutoCommit => 0,\n\t\tsqlite_busy_timeout => 10000,\n\t});\n\n\teval {\n\t\t$dbh->do(q{PRAGMA busy_timeout = 10000});\n\t\t$dbh->do(q{PRAGMA journal_mode = WAL});\n\t\t$dbh->do(q{PRAGMA synchronous = NORMAL});\n\n\t\tmy $sth = $dbh->prepare(q{",
+    )
+    text = replace_all(
+        text,
+        """	while (my ($entry, $row) = each(%$flowcache)) {
+		$sth->execute(
+			$row->{minute_ts},
+			$row->{router_ip},
+			$row->{link_tag},
+			$row->{direction},
+			$row->{ip_version},
+			$row->{src_ip},
+			$row->{dst_ip},
+			$row->{src_asn},
+			$row->{dst_asn},
+			$row->{flow_type},
+			$row->{bytes},
+			$row->{samples},
+			$row->{updated_at},
+		);
+	}
+
+	if ($flowcache_cleanup_due && $flowdb_retention_days > 0) {
+		my $cutoff = time - ($flowdb_retention_days * 86400);
+		my $cutoff_minute = int($cutoff / 60) * 60;
+		$dbh->do("DELETE FROM flow_events WHERE minute_ts < ?", undef, $cutoff_minute);
+	}
+
+	$dbh->commit;
+	$dbh->disconnect;
+}
+""",
+        """		while (my ($entry, $row) = each(%$flowcache)) {
+			$sth->execute(
+				$row->{minute_ts},
+				$row->{router_ip},
+				$row->{link_tag},
+				$row->{direction},
+				$row->{ip_version},
+				$row->{src_ip},
+				$row->{dst_ip},
+				$row->{src_asn},
+				$row->{dst_asn},
+				$row->{flow_type},
+				$row->{bytes},
+				$row->{samples},
+				$row->{updated_at},
+			);
+		}
+
+		if ($flowcache_cleanup_due && $flowdb_retention_days > 0) {
+			my $cutoff = time - ($flowdb_retention_days * 86400);
+			my $cutoff_minute = int($cutoff / 60) * 60;
+			$dbh->do("DELETE FROM flow_events WHERE minute_ts < ?", undef, $cutoff_minute);
+		}
+
+		$dbh->commit;
+	};
+	if ($@) {
+		eval { $dbh->rollback; };
+		warn "Flow query DB flush skipped: $@";
+	}
+	$dbh->disconnect;
+}
+""",
     )
 
     target.write_text(text, encoding="utf-8")

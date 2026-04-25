@@ -67,8 +67,9 @@ function flow_dashboard_db_open() {
 
     try {
         $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
-        $db->busyTimeout(2000);
-        @$db->exec('PRAGMA busy_timeout = 2000');
+        $db->busyTimeout(1000);
+        @$db->exec('PRAGMA busy_timeout = 1000');
+        @$db->exec('PRAGMA query_only = ON');
         @$db->createFunction('flow_dashboard_ip_match', 'flow_dashboard_ip_matches_filter', 2);
         return $db;
     } catch (Exception $exception) {
