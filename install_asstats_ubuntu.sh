@@ -7,6 +7,8 @@ export NEEDRESTART_MODE=a
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="/data/asstats"
+RUNTIME_DIR="${PROJECT_DIR}/runtime"
+FLOW_AUTH_DB="${RUNTIME_DIR}/flow_auth.db"
 REPO_URL="https://github.com/remontti/AS-Stats.git"
 COLLECTOR_PATCHER="${SCRIPT_DIR}/flow_patch_collector.py"
 LOG_DIR="/var/log/asstats-installer"
@@ -25,6 +27,8 @@ ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
 ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-128}"
 ASSTATS_FLOW_RETENTION_DAYS="${ASSTATS_FLOW_RETENTION_DAYS:-14}"
 ASSTATS_TIMEZONE="${ASSTATS_TIMEZONE:-}"
+ASSTATS_MASTER_USER="${ASSTATS_MASTER_USER:-master}"
+ASSTATS_MASTER_PASSWORD="${ASSTATS_MASTER_PASSWORD:-}"
 ASSTATS_ACTION="${ASSTATS_ACTION:-}"
 RAW_WALK_FILE=""
 
@@ -107,6 +111,45 @@ detect_current_timezone() {
   printf '%s' "${current_timezone}"
 }
 
+prompt_customer_asn() {
+  local input_asn
+
+  printf "\n"
+  printf "ASN local do cliente\n"
+  read -r -p "ASN [${ASSTATS_MY_ASN}]: " input_asn
+  [[ -n "${input_asn}" ]] && ASSTATS_MY_ASN="${input_asn}"
+
+  [[ "${ASSTATS_MY_ASN}" =~ ^[0-9]+$ ]] || fail "ASN invalido: ${ASSTATS_MY_ASN}"
+}
+
+prompt_master_credentials() {
+  local confirm_password
+
+  printf "\n"
+  printf "Credenciais do usuario master\n"
+  read -r -p "Usuario master [${ASSTATS_MASTER_USER}]: " input_master_user
+  [[ -n "${input_master_user:-}" ]] && ASSTATS_MASTER_USER="${input_master_user}"
+  [[ -n "${ASSTATS_MASTER_USER}" ]] || fail "Usuario master invalido"
+
+  if [[ -n "${ASSTATS_MASTER_PASSWORD}" ]]; then
+    info "Senha do usuario master recebida por variavel de ambiente"
+    return
+  fi
+
+  while :; do
+    read -r -s -p "Senha do usuario master: " ASSTATS_MASTER_PASSWORD
+    printf "\n"
+    [[ -n "${ASSTATS_MASTER_PASSWORD}" ]] || {
+      warn "A senha do usuario master nao pode ficar vazia."
+      continue
+    }
+    read -r -s -p "Confirme a senha do usuario master: " confirm_password
+    printf "\n"
+    [[ "${ASSTATS_MASTER_PASSWORD}" == "${confirm_password}" ]] && break
+    warn "As senhas informadas nao conferem. Tente novamente."
+  done
+}
+
 prompt_timezone() {
   local current_timezone selected_timezone
   current_timezone="$(detect_current_timezone)"
@@ -158,16 +201,158 @@ EOF
   systemctl restart apache2 >/dev/null 2>&1 || true
 }
 
+sync_local_asn_config() {
+  local config_file
+  config_file="${PROJECT_DIR}/www/config.inc"
+
+  [[ -f "${config_file}" ]] || return 0
+
+  info "Ajustando ASN local da interface web para AS${ASSTATS_MY_ASN}"
+  sed -i "s/\\\$my_asn = \".*\";/\\\$my_asn = \"${ASSTATS_MY_ASN}\";/" "${config_file}" || true
+}
+
+prepare_runtime_security_layout() {
+  info "Preparando runtime seguro fora do webroot"
+
+  mkdir -p "${RUNTIME_DIR}"
+  chown root:www-data "${RUNTIME_DIR}" || true
+  chmod 0770 "${RUNTIME_DIR}" || true
+
+  if [[ -f "${PROJECT_DIR}/asstats/flow_auth.db" && ! -f "${FLOW_AUTH_DB}" ]]; then
+    mv "${PROJECT_DIR}/asstats/flow_auth.db" "${FLOW_AUTH_DB}"
+  fi
+
+  chown root:www-data "${FLOW_AUTH_DB}" 2>/dev/null || true
+  chmod 0660 "${FLOW_AUTH_DB}" 2>/dev/null || true
+}
+
+configure_apache_flow_site() {
+  local apache_conf
+  apache_conf="/etc/apache2/conf-available/flow-observatory.conf"
+
+  info "Aplicando endurecimento do Apache e publicacao por alias"
+  mkdir -p /var/www/html
+
+  cat > "${apache_conf}" <<EOF
+# Managed by Flow Observatory installer
+ServerTokens Prod
+ServerSignature Off
+TraceEnable Off
+FileETag None
+
+Alias /${ASSTATS_WEB_ALIAS} ${PROJECT_DIR}/www
+Alias /${ASSTATS_WEB_ALIAS}/ ${PROJECT_DIR}/www/
+
+<Directory "${PROJECT_DIR}/www">
+    Options -Indexes +FollowSymLinks
+    AllowOverride None
+    Require all granted
+    DirectoryIndex login.php index.php
+</Directory>
+
+<Directory "${PROJECT_DIR}/runtime">
+    Require all denied
+</Directory>
+
+<Directory "${PROJECT_DIR}/conf">
+    Require all denied
+</Directory>
+
+<Directory "${PROJECT_DIR}/asstats">
+    Require all denied
+</Directory>
+
+<Directory "${PROJECT_DIR}/bin">
+    Require all denied
+</Directory>
+
+<FilesMatch "^(config\\.inc|func\\.inc|auth\\.php|flow_ui\\.php)$">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "\\.(db|sqlite|sqlite3|bak|orig|dist|sh|py|pl|log|env|md|ini)$">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_headers.c>
+    Header always unset X-Powered-By
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+</IfModule>
+EOF
+
+  rm -f "/var/www/html/${ASSTATS_WEB_ALIAS}" || true
+  rm -f "/var/www/html/as-stats" || true
+  a2enmod headers rewrite >/dev/null 2>&1 || true
+  a2enconf flow-observatory >/dev/null 2>&1 || true
+}
+
+initialize_auth_database() {
+  local auth_db hash
+  auth_db="${FLOW_AUTH_DB}"
+
+  [[ -x "$(command -v php || true)" ]] || fail "PHP nao encontrado para gerar o hash da senha do master"
+  [[ -x "$(command -v sqlite3 || true)" ]] || fail "sqlite3 nao encontrado para criar a base de autenticacao"
+
+  prepare_runtime_security_layout
+
+  if [[ -f "${auth_db}" ]]; then
+    info "Base de autenticacao ja existe em ${auth_db}"
+    return
+  fi
+
+  info "Inicializando base de autenticacao"
+  hash="$(php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT), PHP_EOL;' "${ASSTATS_MASTER_PASSWORD}")"
+  [[ -n "${hash}" ]] || fail "Nao foi possivel gerar o hash da senha do usuario master"
+
+  sqlite3 "${auth_db}" <<EOF
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_login_at TEXT
+);
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT,
+  role TEXT,
+  action TEXT NOT NULL,
+  target TEXT,
+  details TEXT,
+  ip_address TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
+INSERT INTO users (username, role, password_hash, is_active, created_at, updated_at)
+VALUES ('${ASSTATS_MASTER_USER}', 'master', '${hash}', 1, datetime('now'), datetime('now'));
+EOF
+
+  chown root:www-data "${auth_db}" || true
+  chmod 0660 "${auth_db}" || true
+}
+
 run_theme_upgrade() {
   local theme_script
+  local auth_db
   theme_script="${SCRIPT_DIR}/apply_flow_full_customization.sh"
+  auth_db="${FLOW_AUTH_DB}"
   [[ -f "${theme_script}" ]] || fail "Script de customizacao nao encontrado: ${theme_script}"
   [[ -d "${PROJECT_DIR}" ]] || fail "Projeto nao encontrado em ${PROJECT_DIR}"
 
+  prompt_customer_asn
   prompt_timezone
+  [[ -f "${auth_db}" ]] || prompt_master_credentials
   apply_timezone
   info "Aplicando tema, corretivas do coletor e recursos flow em instalacao existente"
   bash "${theme_script}" "${PROJECT_DIR}" "${ASSTATS_WEB_ALIAS}"
+  sync_local_asn_config
+  initialize_auth_database
 }
 
 run_add_router() {
@@ -647,6 +832,7 @@ customize_web_ui() {
   if [[ -d "${template_dir}" ]] && [[ -f "${template_dir}/flow_ui.php" ]] && [[ -f "${template_dir}/custom.css" ]]; then
     mkdir -p "${PROJECT_DIR}/www/css"
     install -m 0644 "${template_dir}/custom.css" "${PROJECT_DIR}/www/css/custom.css"
+    install -m 0644 "${template_dir}/auth.php" "${PROJECT_DIR}/www/auth.php"
     install -m 0644 "${template_dir}/flow_ui.php" "${PROJECT_DIR}/www/flow_ui.php"
     install -m 0644 "${template_dir}/index.php" "${PROJECT_DIR}/www/index.php"
     install -m 0644 "${template_dir}/linkusage.php" "${PROJECT_DIR}/www/linkusage.php"
@@ -654,6 +840,9 @@ customize_web_ui() {
     install -m 0644 "${template_dir}/ipsearch.php" "${PROJECT_DIR}/www/ipsearch.php"
     install -m 0644 "${template_dir}/asset.php" "${PROJECT_DIR}/www/asset.php"
     install -m 0644 "${template_dir}/ix.php" "${PROJECT_DIR}/www/ix.php"
+    install -m 0644 "${template_dir}/config.php" "${PROJECT_DIR}/www/config.php"
+    install -m 0644 "${template_dir}/login.php" "${PROJECT_DIR}/www/login.php"
+    install -m 0644 "${template_dir}/logout.php" "${PROJECT_DIR}/www/logout.php"
 
     if [[ -f "${PROJECT_DIR}/www/gengraph.php" ]]; then
       perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#ffffff --color AXIS#e2f3ff --color ARROW#d7f6ff --color FRAME#2c5375 --color GRID#456a8558 --color MGRID#6ae3ff8e /g; s/HRULE:0#00000080/HRULE:0#c9f5ff88/g' "${PROJECT_DIR}/www/gengraph.php"
@@ -1055,17 +1244,22 @@ EOF
 
 configure_web() {
   info "Configurando acesso web"
-  ln -sfn "${PROJECT_DIR}/www" "/var/www/html/${ASSTATS_WEB_ALIAS}"
+  prepare_runtime_security_layout
 
-  if [[ -f "${PROJECT_DIR}/www/config.inc" ]]; then
-    sed -i "s/\\\$my_asn = \".*\";/\\\$my_asn = \"${ASSTATS_MY_ASN}\";/" "${PROJECT_DIR}/www/config.inc" || true
-  fi
+  sync_local_asn_config
 
   customize_web_ui
 
   chown -R www-data:www-data "${PROJECT_DIR}/www/asset"
+  chown root:www-data "${PROJECT_DIR}/www/config.inc" || true
+  chmod 0660 "${PROJECT_DIR}/www/config.inc" || true
+  chown root:www-data "${PROJECT_DIR}/conf/knownlinks" || true
+  chmod 0660 "${PROJECT_DIR}/conf/knownlinks" || true
+  chown root:www-data "${FLOW_AUTH_DB}" || true
+  chmod 0660 "${FLOW_AUTH_DB}" || true
   chmod 0755 /data "${PROJECT_DIR}" "${PROJECT_DIR}/conf" "${PROJECT_DIR}/asstats" "${PROJECT_DIR}/www" || true
-  a2enmod rewrite >/dev/null 2>&1 || true
+  chmod 0770 "${RUNTIME_DIR}" || true
+  configure_apache_flow_site
   systemctl enable --now apache2
 }
 
@@ -1308,7 +1502,8 @@ case "${confirm}" in
 esac
 
 awk '!/^[[:space:]]*#/ && NF >= 6 { print }' "${tmp_preview}" >> "${KNOWNLINKS_FILE}"
-chmod 0644 "${KNOWNLINKS_FILE}"
+chown root:www-data "${KNOWNLINKS_FILE}" || true
+chmod 0660 "${KNOWNLINKS_FILE}"
 
 echo "[INFO] Reiniciando coletor e atualizando base web"
 systemctl restart asstatsd.service
@@ -1354,7 +1549,8 @@ detect_flow_exporter_ip() {
       NF >= 6 { $1 = new_ip; print $1, $2, $3, $4, $5, $6; next }
       { print }' "${PROJECT_DIR}/conf/knownlinks" > "${PROJECT_DIR}/conf/knownlinks.tmp"
     mv "${PROJECT_DIR}/conf/knownlinks.tmp" "${PROJECT_DIR}/conf/knownlinks"
-    chmod 0644 "${PROJECT_DIR}/conf/knownlinks" || true
+    chown root:www-data "${PROJECT_DIR}/conf/knownlinks" || true
+    chmod 0660 "${PROJECT_DIR}/conf/knownlinks" || true
     systemctl restart asstatsd.service
   fi
 }
@@ -1374,7 +1570,8 @@ run_correctives() {
   fi
 
   chmod 0755 /data "${PROJECT_DIR}" "${PROJECT_DIR}/conf" "${PROJECT_DIR}/asstats" "${PROJECT_DIR}/www" || true
-  [[ -f "${PROJECT_DIR}/conf/knownlinks" ]] && chmod 0644 "${PROJECT_DIR}/conf/knownlinks" || true
+  [[ -f "${PROJECT_DIR}/conf/knownlinks" ]] && chown root:www-data "${PROJECT_DIR}/conf/knownlinks" || true
+  [[ -f "${PROJECT_DIR}/conf/knownlinks" ]] && chmod 0660 "${PROJECT_DIR}/conf/knownlinks" || true
 
   if [[ -f "${PROJECT_DIR}/conf/knownlinks" ]]; then
     if ! perl "${PROJECT_DIR}/bin/rrd-extractstats.pl" \
@@ -1405,10 +1602,11 @@ verify_installation() {
   [[ -f /etc/default/asstats ]] || fail "Arquivo /etc/default/asstats nao foi criado"
   [[ -f "${PROJECT_DIR}/conf/knownlinks" ]] || fail "knownlinks nao foi criado"
   [[ -d "${PROJECT_DIR}/rrd" ]] || fail "Diretorio RRD nao foi criado"
-  [[ -L "/var/www/html/${ASSTATS_WEB_ALIAS}" ]] || fail "Atalho web nao foi criado"
+  [[ -f /etc/apache2/conf-available/flow-observatory.conf ]] || fail "Configuracao endurecida do Apache nao foi criada"
   [[ -f "${PROJECT_DIR}/www/plugins/mobile-detect/Mobile_Detect.php" ]] || fail "Dependencia da WebUI ausente: ${PROJECT_DIR}/www/plugins/mobile-detect/Mobile_Detect.php"
   [[ -f "${PROJECT_DIR}/www/config.inc" ]] || fail "Arquivo ${PROJECT_DIR}/www/config.inc nao encontrado"
   [[ -f "${PROJECT_DIR}/www/func.inc" ]] || fail "Arquivo ${PROJECT_DIR}/www/func.inc nao encontrado"
+  [[ -f "${FLOW_AUTH_DB}" ]] || fail "Base de autenticacao nao encontrada em ${FLOW_AUTH_DB}"
 
   php -m | grep -qi '^sqlite3$' || fail "Modulo PHP sqlite3 nao esta carregado"
   php -m | grep -qi '^gd$' || fail "Modulo PHP gd nao esta carregado"
@@ -1438,6 +1636,7 @@ Ubuntu detectado: ${UBUNTU_NAME} (${UBUNTU_CODENAME})
 Projeto: ${PROJECT_DIR}
 Log: ${LOG_FILE}
 Timezone: ${ASSTATS_TIMEZONE}
+Usuario master: ${ASSTATS_MASTER_USER}
 
 Web:
   http://IP_DO_SERVIDOR/${ASSTATS_WEB_ALIAS}
@@ -1449,6 +1648,8 @@ Portas:
 Arquivos importantes:
   ${PROJECT_DIR}/conf/knownlinks
   ${PROJECT_DIR}/www/config.inc
+  ${FLOW_AUTH_DB}
+  ${RUNTIME_DIR}
   /etc/default/asstats
   /usr/local/bin/asstats-add-router.sh
 
@@ -1459,7 +1660,7 @@ Servicos:
 Proximos passos:
 1. Edite ${PROJECT_DIR}/conf/knownlinks com IP, ifIndex, tag, descricao, cor e sampling.
 2. Revise o arquivo ${PROJECT_DIR}/conf/knownlinks e ajuste se necessario.
-3. Ajuste o ASN local em ${PROJECT_DIR}/www/config.inc se necessario.
+3. Valide o ASN local configurado em ${PROJECT_DIR}/www/config.inc.
 4. Configure o roteador para exportar NetFlow v8/v9 AS ou sFlow para este servidor.
 5. Se quiser adicionar outro roteador depois:
    /usr/local/bin/asstats-add-router.sh ${PROJECT_DIR}
@@ -1497,7 +1698,9 @@ main() {
 
   detect_ubuntu
   preflight
+  prompt_customer_asn
   prompt_timezone
+  prompt_master_credentials
   configure_repos
   install_packages
   apply_timezone
@@ -1505,6 +1708,7 @@ main() {
   install_project
   configure_snmp
   configure_web
+  initialize_auth_database
   configure_knownlinks
   install_systemd_units
   install_router_management_tool

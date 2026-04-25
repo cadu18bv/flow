@@ -83,6 +83,11 @@ function flow_render_select($name, $value, $options) {
     return $html;
 }
 
+function flow_validate_asn_filter($asn) {
+    $asn = trim((string)$asn);
+    return $asn === '' || ctype_digit($asn);
+}
+
 function flow_render_mode_switch($current) {
     $options = array(
         'any' => 'Qualquer lado',
@@ -134,6 +139,96 @@ function flow_query_link_labels() {
     return $labels;
 }
 
+function flow_query_link_options() {
+    $options = array('' => 'Todas as interfaces');
+    foreach (flow_query_link_labels() as $tag => $description) {
+        $options[$tag] = ($description !== '' ? $description . ' (' . $tag . ')' : $tag);
+    }
+    return $options;
+}
+
+function flow_validate_ip_filter($filter) {
+    $filter = trim((string)$filter);
+    if ($filter === '') {
+        return false;
+    }
+
+    if (strpos($filter, '/') === false) {
+        return filter_var($filter, FILTER_VALIDATE_IP) !== false;
+    }
+
+    list($network, $prefix) = array_pad(explode('/', $filter, 2), 2, null);
+    if (!filter_var($network, FILTER_VALIDATE_IP)) {
+        return false;
+    }
+    if ($prefix === null || $prefix === '' || !ctype_digit((string)$prefix)) {
+        return false;
+    }
+
+    $maxPrefix = (strpos($network, ':') !== false) ? 128 : 32;
+    $prefix = (int)$prefix;
+    return $prefix >= 0 && $prefix <= $maxPrefix;
+}
+
+function flow_ip_matches_filter($candidate, $filter) {
+    $candidate = trim((string)$candidate);
+    $filter = trim((string)$filter);
+
+    if ($candidate === '' || $filter === '') {
+        return false;
+    }
+
+    if (strpos($filter, '/') === false) {
+        return $candidate === $filter;
+    }
+
+    list($network, $prefixLength) = explode('/', $filter, 2);
+    $candidatePacked = @inet_pton($candidate);
+    $networkPacked = @inet_pton($network);
+    if ($candidatePacked === false || $networkPacked === false || strlen($candidatePacked) !== strlen($networkPacked)) {
+        return false;
+    }
+
+    $prefixLength = (int)$prefixLength;
+    $fullBytes = intdiv($prefixLength, 8);
+    $remainingBits = $prefixLength % 8;
+
+    if ($fullBytes > 0 && substr($candidatePacked, 0, $fullBytes) !== substr($networkPacked, 0, $fullBytes)) {
+        return false;
+    }
+
+    if ($remainingBits === 0) {
+        return true;
+    }
+
+    $mask = (0xFF << (8 - $remainingBits)) & 0xFF;
+    return (ord($candidatePacked[$fullBytes]) & $mask) === (ord($networkPacked[$fullBytes]) & $mask);
+}
+
+function flow_bgp_he_url($asn) {
+    $asn = (int)$asn;
+    if ($asn <= 0) {
+        return '';
+    }
+    return 'https://bgp.he.net/AS' . $asn;
+}
+
+function flow_render_asn_link($asn) {
+    $asn = (int)$asn;
+    if ($asn <= 0) {
+        return '<small>AS0</small>';
+    }
+
+    $url = htmlspecialchars(flow_bgp_he_url($asn));
+    return '<small>AS' . htmlspecialchars((string)$asn) . ' '
+        . '<a class="flow-asn-link" href="' . $url . '" target="_blank" rel="noopener noreferrer" title="Consultar AS' . htmlspecialchars((string)$asn) . ' no bgp.he">'
+        . '<i class="fa fa-external-link"></i></a></small>';
+}
+
+function flow_render_endpoint_cell($ip, $asn) {
+    return htmlspecialchars((string)$ip) . ' ' . flow_render_asn_link($asn);
+}
+
 function flow_render_link_badge($tag) {
     $labels = flow_query_link_labels();
     $tagText = htmlspecialchars((string)$tag);
@@ -149,16 +244,26 @@ function flow_render_link_badge($tag) {
     return '<span class="flow-pill">' . $tagText . '</span>';
 }
 
-function flow_build_export_url($ip, $mode, $hours) {
-    return 'ipsearch.php?ip=' . rawurlencode($ip) . '&mode=' . rawurlencode($mode) . '&hours=' . rawurlencode($hours) . '&export=pdf';
+function flow_build_export_url($ip, $mode, $hours, $link, $asn) {
+    $url = 'ipsearch.php?ip=' . rawurlencode($ip) . '&mode=' . rawurlencode($mode) . '&hours=' . rawurlencode($hours);
+    if ($link !== '') {
+        $url .= '&link=' . rawurlencode($link);
+    }
+    if ($asn !== '') {
+        $url .= '&asn=' . rawurlencode($asn);
+    }
+    $url .= '&export=pdf';
+    return $url;
 }
 
-function flow_render_pdf_document($queryIp, $queryMode, $queryHours, $summaryCards, $chartHtml, $topCounterpartsHtml, $recentEventsHtml) {
+function flow_render_pdf_document($queryIp, $queryMode, $queryHours, $queryLink, $queryAsn, $summaryCards, $chartHtml, $topCounterpartsHtml, $recentEventsHtml) {
     $title = 'Flow Observatory | IP Lens Report';
     $modeLabel = strtoupper($queryMode);
     $windowLabel = htmlspecialchars(flow_query_hours_options()[$queryHours]);
     $generatedAt = htmlspecialchars(flow_format_timestamp_local(time(), 'd/m/Y H:i:s'));
     $timezoneName = htmlspecialchars(flow_query_timezone_name());
+    $linkLabel = $queryLink !== '' ? htmlspecialchars((string)$queryLink) : 'Todas as interfaces';
+    $asnLabel = $queryAsn !== '' ? 'AS' . htmlspecialchars((string)$queryAsn) : 'Todos os ASN';
     $summaryHtml = '';
     foreach ($summaryCards as $card) {
         $summaryHtml .= '<div class="report-stat"><span>' . htmlspecialchars($card['label']) . '</span><strong>' . htmlspecialchars($card['value']) . '</strong></div>';
@@ -210,6 +315,8 @@ function flow_render_pdf_document($queryIp, $queryMode, $queryHours, $summaryCar
       <span class="report-chip">IP: {$queryIp}</span>
       <span class="report-chip">Modo: {$modeLabel}</span>
       <span class="report-chip">Janela: {$windowLabel}</span>
+      <span class="report-chip">Interface: {$linkLabel}</span>
+      <span class="report-chip">ASN: {$asnLabel}</span>
       <span class="report-chip">Gerado em: {$generatedAt}</span>
       <span class="report-chip">Timezone: {$timezoneName}</span>
     </div>
@@ -341,6 +448,8 @@ function flow_render_query_table($headers, $rows) {
 
 $queryIp = isset($_GET['ip']) ? trim($_GET['ip']) : '';
 $queryMode = isset($_GET['mode']) ? $_GET['mode'] : 'any';
+$queryLink = isset($_GET['link']) ? trim($_GET['link']) : '';
+$queryAsn = isset($_GET['asn']) ? trim($_GET['asn']) : '';
 $queryHours = isset($_GET['hours']) ? (int)$_GET['hours'] : 24;
 $exportPdf = isset($_GET['export']) && $_GET['export'] === 'pdf';
 $queryHours = array_key_exists($queryHours, flow_query_hours_options()) ? $queryHours : 24;
@@ -361,20 +470,35 @@ $recentEventsHtml = flow_render_empty_state('Sem eventos', 'Nenhum evento agrega
 $insightsHtml = flow_render_empty_state('Pipeline indisponivel', 'A base flow_events.db ainda nao foi criada por esse coletor.');
 
 if ($queryIp !== '') {
-    if (!filter_var($queryIp, FILTER_VALIDATE_IP)) {
-        $searchError = 'O valor informado nao e um IP valido.';
+    if (!flow_validate_ip_filter($queryIp)) {
+        $searchError = 'Informe um IP valido ou prefixo CIDR, como 45.173.100.0/22 ou 2804:5af4::/32.';
+    } elseif (!flow_validate_asn_filter($queryAsn)) {
+        $searchError = 'O filtro de ASN precisa ser numerico.';
     } elseif (!$dbReady) {
         $searchError = 'A base flow_events.db ainda nao existe neste ambiente. Rode a corretiva do coletor e aguarde novas amostras.';
     } else {
         $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
+        $db->createFunction('flow_ip_filter_match', 'flow_ip_matches_filter', 2);
 
         $where = 'minute_ts >= :start';
         if ($queryMode === 'src') {
-            $where .= ' AND src_ip = :ip';
+            $where .= ' AND flow_ip_filter_match(src_ip, :ip_filter) = 1';
         } elseif ($queryMode === 'dst') {
-            $where .= ' AND dst_ip = :ip';
+            $where .= ' AND flow_ip_filter_match(dst_ip, :ip_filter) = 1';
         } else {
-            $where .= ' AND (src_ip = :ip OR dst_ip = :ip)';
+            $where .= ' AND (flow_ip_filter_match(src_ip, :ip_filter) = 1 OR flow_ip_filter_match(dst_ip, :ip_filter) = 1)';
+        }
+        if ($queryLink !== '') {
+            $where .= ' AND link_tag = :link_tag';
+        }
+        if ($queryAsn !== '') {
+            if ($queryMode === 'src') {
+                $where .= ' AND src_asn = :asn_filter';
+            } elseif ($queryMode === 'dst') {
+                $where .= ' AND dst_asn = :asn_filter';
+            } else {
+                $where .= ' AND (src_asn = :asn_filter OR dst_asn = :asn_filter)';
+            }
         }
 
         $summaryStmt = $db->prepare(
@@ -382,18 +506,30 @@ if ($queryIp !== '') {
                 COALESCE(SUM(bytes), 0) AS total_bytes,
                 COALESCE(SUM(samples), 0) AS total_samples,
                 COUNT(DISTINCT link_tag) AS link_count,
-                COUNT(DISTINCT CASE WHEN src_ip = :ip THEN dst_ip ELSE src_ip END) AS counterpart_count
+                COUNT(DISTINCT CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_ip ELSE src_ip END) AS counterpart_count
              FROM flow_events
              WHERE {$where}"
         );
         $summaryStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
-        $summaryStmt->bindValue(':ip', $queryIp, SQLITE3_TEXT);
+        $summaryStmt->bindValue(':ip_filter', $queryIp, SQLITE3_TEXT);
+        if ($queryLink !== '') {
+            $summaryStmt->bindValue(':link_tag', $queryLink, SQLITE3_TEXT);
+        }
+        if ($queryAsn !== '') {
+            $summaryStmt->bindValue(':asn_filter', (int)$queryAsn, SQLITE3_INTEGER);
+        }
         $summary = $summaryStmt->execute()->fetchArray(SQLITE3_ASSOC);
 
         $summaryCards[] = array('label' => 'Bytes', 'value' => format_bytes((int)$summary['total_bytes']));
         $summaryCards[] = array('label' => 'Amostras', 'value' => number_format((int)$summary['total_samples'], 0, ',', '.'));
         $summaryCards[] = array('label' => 'Links', 'value' => (int)$summary['link_count']);
         $summaryCards[] = array('label' => 'Contrapartes', 'value' => (int)$summary['counterpart_count']);
+        if ($queryLink !== '') {
+            $summaryCards[] = array('label' => 'Interface', 'value' => $queryLink);
+        }
+        if ($queryAsn !== '') {
+            $summaryCards[] = array('label' => 'ASN', 'value' => 'AS' . $queryAsn);
+        }
 
         $timelineStmt = $db->prepare(
             "SELECT minute_ts, SUM(bytes) AS total_bytes
@@ -403,7 +539,13 @@ if ($queryIp !== '') {
              ORDER BY minute_ts"
         );
         $timelineStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
-        $timelineStmt->bindValue(':ip', $queryIp, SQLITE3_TEXT);
+        $timelineStmt->bindValue(':ip_filter', $queryIp, SQLITE3_TEXT);
+        if ($queryLink !== '') {
+            $timelineStmt->bindValue(':link_tag', $queryLink, SQLITE3_TEXT);
+        }
+        if ($queryAsn !== '') {
+            $timelineStmt->bindValue(':asn_filter', (int)$queryAsn, SQLITE3_INTEGER);
+        }
         $timelineResult = $timelineStmt->execute();
         $timelinePoints = array();
         while ($row = $timelineResult->fetchArray(SQLITE3_ASSOC)) {
@@ -413,8 +555,8 @@ if ($queryIp !== '') {
 
         $counterpartsStmt = $db->prepare(
             "SELECT
-                CASE WHEN src_ip = :ip THEN dst_ip ELSE src_ip END AS counterpart_ip,
-                CASE WHEN src_ip = :ip THEN dst_asn ELSE src_asn END AS counterpart_asn,
+                CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_ip ELSE src_ip END AS counterpart_ip,
+                CASE WHEN flow_ip_filter_match(src_ip, :ip_filter) = 1 THEN dst_asn ELSE src_asn END AS counterpart_asn,
                 SUM(bytes) AS total_bytes,
                 COUNT(DISTINCT link_tag) AS link_count,
                 MAX(minute_ts) AS last_seen
@@ -425,13 +567,19 @@ if ($queryIp !== '') {
              LIMIT 20"
         );
         $counterpartsStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
-        $counterpartsStmt->bindValue(':ip', $queryIp, SQLITE3_TEXT);
+        $counterpartsStmt->bindValue(':ip_filter', $queryIp, SQLITE3_TEXT);
+        if ($queryLink !== '') {
+            $counterpartsStmt->bindValue(':link_tag', $queryLink, SQLITE3_TEXT);
+        }
+        if ($queryAsn !== '') {
+            $counterpartsStmt->bindValue(':asn_filter', (int)$queryAsn, SQLITE3_INTEGER);
+        }
         $counterpartsResult = $counterpartsStmt->execute();
         $counterpartRows = array();
         while ($row = $counterpartsResult->fetchArray(SQLITE3_ASSOC)) {
             $counterpartRows[] = array(
                 '<span class="flow-pill">' . htmlspecialchars($row['counterpart_ip']) . '</span>',
-                'AS' . htmlspecialchars($row['counterpart_asn']),
+                flow_render_asn_link($row['counterpart_asn']),
                 htmlspecialchars(format_bytes((int)$row['total_bytes'])),
                 htmlspecialchars((string)$row['link_count']),
                 htmlspecialchars(flow_format_query_time($row['last_seen'])),
@@ -461,7 +609,13 @@ if ($queryIp !== '') {
              LIMIT 40"
         );
         $recentStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
-        $recentStmt->bindValue(':ip', $queryIp, SQLITE3_TEXT);
+        $recentStmt->bindValue(':ip_filter', $queryIp, SQLITE3_TEXT);
+        if ($queryLink !== '') {
+            $recentStmt->bindValue(':link_tag', $queryLink, SQLITE3_TEXT);
+        }
+        if ($queryAsn !== '') {
+            $recentStmt->bindValue(':asn_filter', (int)$queryAsn, SQLITE3_INTEGER);
+        }
         $recentResult = $recentStmt->execute();
         $recentRows = array();
         while ($row = $recentResult->fetchArray(SQLITE3_ASSOC)) {
@@ -470,8 +624,8 @@ if ($queryIp !== '') {
                 flow_render_link_badge($row['link_tag']),
                 htmlspecialchars(strtoupper($row['direction'])),
                 'IPv' . htmlspecialchars($row['ip_version']),
-                htmlspecialchars($row['src_ip']) . ' <small>AS' . htmlspecialchars($row['src_asn']) . '</small>',
-                htmlspecialchars($row['dst_ip']) . ' <small>AS' . htmlspecialchars($row['dst_asn']) . '</small>',
+                flow_render_endpoint_cell($row['src_ip'], $row['src_asn']),
+                flow_render_endpoint_cell($row['dst_ip'], $row['dst_asn']),
                 htmlspecialchars(format_bytes((int)$row['total_bytes'])),
                 htmlspecialchars((string)$row['total_samples']),
             );
@@ -484,6 +638,8 @@ if ($queryIp !== '') {
         $insightsHtml = '<div class="flow-kpi-strip">'
             . '<div class="flow-kpi"><span>Lookup</span><strong>' . htmlspecialchars($queryIp) . '</strong></div>'
             . '<div class="flow-kpi"><span>Modo</span><strong>' . htmlspecialchars(strtoupper($queryMode)) . '</strong></div>'
+            . '<div class="flow-kpi"><span>Interface</span><strong>' . htmlspecialchars($queryLink !== '' ? $queryLink : 'Todas') . '</strong></div>'
+            . '<div class="flow-kpi"><span>ASN</span><strong>' . htmlspecialchars($queryAsn !== '' ? 'AS' . $queryAsn : 'Todos') . '</strong></div>'
             . '<div class="flow-kpi"><span>Base</span><strong>' . htmlspecialchars(basename($dbPath)) . '</strong></div>'
             . '</div>';
 
@@ -500,6 +656,8 @@ if ($exportPdf) {
         htmlspecialchars($queryIp),
         $queryMode,
         $queryHours,
+        $queryLink,
+        $queryAsn,
         $summaryCards,
         $chartHtml,
         $topCounterpartsHtml,
@@ -519,12 +677,16 @@ echo flow_render_hero(
 $form = '<form method="get" action="ipsearch.php" class="flow-form-stack flow-search-form">'
     . '<label>IP de origem ou destino</label>'
     . flow_render_mode_switch($queryMode)
-    . '<div class="flow-inline-form flow-search-row">'
-    . '<input class="flow-input flow-input-xl flow-search-ip" type="text" name="ip" value="' . htmlspecialchars($queryIp) . '" placeholder="Ex.: 8.8.8.8 ou 2800:3f0:4001:..." />'
-    . '<div class="flow-search-tools">'
+    . '<div class="flow-search-stack">'
+    . '<input class="flow-input flow-input-xl flow-search-ip" type="text" name="ip" value="' . htmlspecialchars($queryIp) . '" placeholder="Ex.: 8.8.8.8, 45.173.100.0/22 ou 2804:5af4::/32" />'
+    . '<label>ASN opcional</label>'
+    . '<input class="flow-input flow-input-xl" type="text" name="asn" value="' . htmlspecialchars($queryAsn) . '" placeholder="Ex.: 268840" />'
+    . '<label>Interface e janela</label>'
+    . '<div class="flow-search-filter-grid">'
+    . str_replace('class="flow-input"', 'class="flow-input flow-search-link"', flow_render_select('link', $queryLink, flow_query_link_options()))
     . str_replace('class="flow-input"', 'class="flow-input flow-search-hours"', flow_render_select('hours', $queryHours, flow_query_hours_options()))
-    . '<button class="flow-button flow-button-xl flow-search-submit" type="submit">Investigar</button>'
     . '</div>'
+    . '<button class="flow-button flow-button-xl flow-search-submit" type="submit">Investigar</button>'
     . '</div>'
     . '</form>';
 
@@ -532,7 +694,7 @@ if ($searchError !== '') {
     $form .= '<div class="flow-inline-alert">' . htmlspecialchars($searchError) . '</div>';
 } elseif ($queryIp !== '') {
     $form .= '<div class="flow-search-actions">'
-        . '<a class="flow-button flow-button-ghost flow-button-export" href="' . htmlspecialchars(flow_build_export_url($queryIp, $queryMode, $queryHours)) . '" target="_blank" rel="noopener noreferrer">Exportar PDF</a>'
+        . '<a class="flow-button flow-button-ghost flow-button-export" href="' . htmlspecialchars(flow_build_export_url($queryIp, $queryMode, $queryHours, $queryLink, $queryAsn)) . '" target="_blank" rel="noopener noreferrer">Exportar PDF</a>'
         . '<span class="flow-search-hint">Abre um relatorio limpo para salvar em PDF com o filtro atual.</span>'
         . '</div>';
 }

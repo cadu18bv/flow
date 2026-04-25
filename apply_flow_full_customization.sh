@@ -6,10 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${1:-/data/asstats}"
 WEB_ALIAS="${2:-flow}"
 WWW_DIR="${PROJECT_DIR}/www"
+RUNTIME_DIR="${PROJECT_DIR}/runtime"
+FLOW_AUTH_DB="${RUNTIME_DIR}/flow_auth.db"
 FUNC_FILE="${WWW_DIR}/func.inc"
 CSS_FILE="${WWW_DIR}/css/custom.css"
 KNOWNLINKS_FILE="${PROJECT_DIR}/conf/knownlinks"
-ENV_FILE="${PROJECT_DIR}/flow-web.env"
+ENV_FILE="${RUNTIME_DIR}/flow-web.env"
 TEMPLATE_DIR="${SCRIPT_DIR}/flow_webui"
 COLLECTOR_PATCHER="${SCRIPT_DIR}/flow_patch_collector.py"
 
@@ -428,6 +430,7 @@ apply_flow_templates() {
   require_file "${TEMPLATE_DIR}/flow_ui.php"
 
   install -m 0644 "${TEMPLATE_DIR}/custom.css" "${WWW_DIR}/css/custom.css"
+  install -m 0644 "${TEMPLATE_DIR}/auth.php" "${WWW_DIR}/auth.php"
   install -m 0644 "${TEMPLATE_DIR}/flow_ui.php" "${WWW_DIR}/flow_ui.php"
   install -m 0644 "${TEMPLATE_DIR}/index.php" "${WWW_DIR}/index.php"
   install -m 0644 "${TEMPLATE_DIR}/linkusage.php" "${WWW_DIR}/linkusage.php"
@@ -435,6 +438,9 @@ apply_flow_templates() {
   install -m 0644 "${TEMPLATE_DIR}/ipsearch.php" "${WWW_DIR}/ipsearch.php"
   install -m 0644 "${TEMPLATE_DIR}/asset.php" "${WWW_DIR}/asset.php"
   install -m 0644 "${TEMPLATE_DIR}/ix.php" "${WWW_DIR}/ix.php"
+  install -m 0644 "${TEMPLATE_DIR}/config.php" "${WWW_DIR}/config.php"
+  install -m 0644 "${TEMPLATE_DIR}/login.php" "${WWW_DIR}/login.php"
+  install -m 0644 "${TEMPLATE_DIR}/logout.php" "${WWW_DIR}/logout.php"
 }
 
 apply_flow_collector_patch() {
@@ -450,6 +456,17 @@ configure_runtime_support() {
   local flow_db flow_retention
   flow_db="${PROJECT_DIR}/asstats/flow_events.db"
   flow_retention="${ASSTATS_FLOW_RETENTION_DAYS:-14}"
+
+  mkdir -p "${RUNTIME_DIR}"
+  chown root:www-data "${RUNTIME_DIR}" || true
+  chmod 0770 "${RUNTIME_DIR}" || true
+
+  if [[ -f "${PROJECT_DIR}/asstats/flow_auth.db" && ! -f "${FLOW_AUTH_DB}" ]]; then
+    mv "${PROJECT_DIR}/asstats/flow_auth.db" "${FLOW_AUTH_DB}"
+  fi
+
+  chown root:www-data "${FLOW_AUTH_DB}" 2>/dev/null || true
+  chmod 0660 "${FLOW_AUTH_DB}" 2>/dev/null || true
 
   if [[ -f /etc/default/asstats ]]; then
     grep -q '^ASSTATS_FLOW_DB=' /etc/default/asstats && \
@@ -483,6 +500,67 @@ exec perl "${ASSTATS_PROJECT_DIR}/bin/asstatd.pl" \
 EOF
     chmod +x /usr/local/bin/asstatsd-wrapper.sh
   fi
+}
+
+configure_apache_hardening() {
+  local apache_conf
+  apache_conf="/etc/apache2/conf-available/flow-observatory.conf"
+
+  cat > "${apache_conf}" <<EOF
+# Managed by Flow Observatory customization
+ServerTokens Prod
+ServerSignature Off
+TraceEnable Off
+FileETag None
+
+Alias /${WEB_ALIAS} ${WWW_DIR}
+Alias /${WEB_ALIAS}/ ${WWW_DIR}/
+
+<Directory "${WWW_DIR}">
+    Options -Indexes +FollowSymLinks
+    AllowOverride None
+    Require all granted
+    DirectoryIndex login.php index.php
+</Directory>
+
+<Directory "${RUNTIME_DIR}">
+    Require all denied
+</Directory>
+
+<Directory "${PROJECT_DIR}/conf">
+    Require all denied
+</Directory>
+
+<Directory "${PROJECT_DIR}/asstats">
+    Require all denied
+</Directory>
+
+<Directory "${PROJECT_DIR}/bin">
+    Require all denied
+</Directory>
+
+<FilesMatch "^(config\\.inc|func\\.inc|auth\\.php|flow_ui\\.php)$">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "\\.(db|sqlite|sqlite3|bak|orig|dist|sh|py|pl|log|env|md|ini)$">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_headers.c>
+    Header always unset X-Powered-By
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+</IfModule>
+EOF
+
+  mkdir -p /var/www/html
+  rm -f "/var/www/html/${WEB_ALIAS}" || true
+  rm -f /var/www/html/as-stats || true
+  a2enmod headers rewrite >/dev/null 2>&1 || true
+  a2enconf flow-observatory >/dev/null 2>&1 || true
 }
 
 install_router_management_tool() {
@@ -636,12 +714,11 @@ EOF
   chmod +x /usr/local/bin/asstats-add-router.sh
 }
 
-configure_alias() {
-  mkdir -p /var/www/html
-  ln -sfn "${WWW_DIR}" "/var/www/html/${WEB_ALIAS}"
-  if [[ "${WEB_ALIAS}" != "as-stats" && -L /var/www/html/as-stats ]]; then
-    rm -f /var/www/html/as-stats
-  fi
+configure_admin_permissions() {
+  [[ -f "${WWW_DIR}/config.inc" ]] && chown root:www-data "${WWW_DIR}/config.inc" && chmod 0660 "${WWW_DIR}/config.inc" || true
+  [[ -f "${KNOWNLINKS_FILE}" ]] && chown root:www-data "${KNOWNLINKS_FILE}" && chmod 0660 "${KNOWNLINKS_FILE}" || true
+  [[ -f "${FLOW_AUTH_DB}" ]] && chown root:www-data "${FLOW_AUTH_DB}" && chmod 0660 "${FLOW_AUTH_DB}" || true
+  [[ -d "${RUNTIME_DIR}" ]] && chown root:www-data "${RUNTIME_DIR}" && chmod 0770 "${RUNTIME_DIR}" || true
 }
 
 check_cdn_link() {
@@ -693,7 +770,8 @@ main() {
   configure_runtime_support
   install_router_management_tool
   patch_graphs
-  configure_alias
+  configure_apache_hardening
+  configure_admin_permissions
   reload_services
   export_web_url
   check_cdn_link

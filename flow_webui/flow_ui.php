@@ -1,4 +1,5 @@
 <?php
+require_once("auth.php");
 
 function flow_active_class($current, $expected) {
     return $current === $expected ? 'is-active' : '';
@@ -21,14 +22,21 @@ function flow_top_links() {
 }
 
 function flow_render_shell_start($title, $active = 'overview') {
+    flow_auth_require_login();
+
     $brand = 'CECTI Flow Observatory';
     $title = htmlspecialchars($title);
+    $currentUser = flow_auth_current_user();
+    $username = htmlspecialchars($currentUser ? $currentUser['username'] : 'guest');
+    $userRole = htmlspecialchars($currentUser ? strtoupper($currentUser['role']) : 'GUEST');
     $activeOverview = flow_active_class($active, 'overview');
     $activeHistory = flow_active_class($active, 'history');
     $activeIp = flow_active_class($active, 'ipsearch');
     $activeAsset = flow_active_class($active, 'asset');
     $activeIx = flow_active_class($active, 'ix');
     $activeLinks = flow_active_class($active, 'links');
+    $activeConfig = flow_active_class($active, 'config');
+    $configLink = flow_auth_has_role(array('master', 'admin')) ? '<a class="' . $activeConfig . '" href="config.php">Config</a>' : '';
 
     echo <<<HTML
 <!DOCTYPE html>
@@ -45,7 +53,7 @@ function flow_render_shell_start($title, $active = 'overview') {
   <link rel="stylesheet" href="plugins/ionicons/ionicons.min.css">
   <link rel="stylesheet" href="css/custom.css">
 </head>
-<body class="flow-body">
+<body class="flow-body" data-theme="dark">
   <div class="flow-shell">
     <header class="flow-topbar">
       <div class="flow-brand">
@@ -62,7 +70,17 @@ function flow_render_shell_start($title, $active = 'overview') {
         <a class="{$activeAsset}" href="asset.php">AS-SET Studio</a>
         <a class="{$activeIx}" href="ix.php">IX Analytics</a>
         <a class="{$activeLinks}" href="linkusage.php">Link Flow</a>
+        {$configLink}
       </nav>
+      <div class="flow-userbar">
+        <button class="flow-theme-toggle" type="button" id="flowThemeToggle" aria-label="Alternar tema">
+          <i class="fa fa-moon-o" aria-hidden="true"></i>
+          <span id="flowThemeToggleLabel">Escuro</span>
+        </button>
+        <span class="flow-user-pill">{$userRole}</span>
+        <span class="flow-user-name">{$username}</span>
+        <a class="flow-user-link" href="logout.php">Sair</a>
+      </div>
     </header>
     <main class="flow-main">
 HTML;
@@ -81,11 +99,205 @@ function flow_render_shell_end() {
       </div>
     </footer>
   </div>
+  <script>
+    (function() {
+      var storageKey = 'flow-theme';
+      var body = document.body;
+      var toggle = document.getElementById('flowThemeToggle');
+      var toggleLabel = document.getElementById('flowThemeToggleLabel');
+      var toggleIcon = toggle ? toggle.querySelector('i') : null;
+
+      function applyTheme(theme) {
+        body.setAttribute('data-theme', theme);
+        if (!toggleLabel || !toggleIcon) {
+          return;
+        }
+        if (theme === 'light') {
+          toggleLabel.textContent = 'Claro';
+          toggleIcon.className = 'fa fa-sun-o';
+        } else {
+          toggleLabel.textContent = 'Escuro';
+          toggleIcon.className = 'fa fa-moon-o';
+        }
+      }
+
+      var savedTheme = null;
+      try {
+        savedTheme = window.localStorage.getItem(storageKey);
+      } catch (error) {
+        savedTheme = null;
+      }
+      applyTheme(savedTheme === 'light' ? 'light' : 'dark');
+
+      if (toggle) {
+        toggle.addEventListener('click', function() {
+          var nextTheme = body.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+          applyTheme(nextTheme);
+          try {
+            window.localStorage.setItem(storageKey, nextTheme);
+          } catch (error) {
+          }
+        });
+      }
+    })();
+  </script>
   <script src="plugins/jQuery/jquery-2.2.3.min.js"></script>
   <script src="bootstrap/js/bootstrap.min.js"></script>
 </body>
 </html>
 HTML;
+}
+
+function flow_format_bits($bits) {
+    $bits = (float)$bits;
+    if ($bits >= 1000000000000) {
+        return sprintf('%.2f Tb/s', $bits / 1000000000000);
+    } elseif ($bits >= 1000000000) {
+        return sprintf('%.2f Gb/s', $bits / 1000000000);
+    } elseif ($bits >= 1000000) {
+        return sprintf('%.2f Mb/s', $bits / 1000000);
+    } elseif ($bits >= 1000) {
+        return sprintf('%.2f Kb/s', $bits / 1000);
+    }
+    return sprintf('%.0f b/s', $bits);
+}
+
+function flow_resolve_selected_links($selectedLinks) {
+    if (!empty($selectedLinks)) {
+        return $selectedLinks;
+    }
+
+    $resolved = array();
+    foreach (getknownlinks() as $link) {
+        if (isset($link['tag'])) {
+            $resolved[] = $link['tag'];
+        }
+    }
+    return $resolved;
+}
+
+function flow_fetch_rrd_graph_stats($as, $ipversion, $start, $end, $peerusage, $selectedLinks = array()) {
+    global $rrdtool;
+
+    $rrdfile = getRRDFileForAS($as, $peerusage);
+    if (!is_file($rrdfile)) {
+        return null;
+    }
+
+    $links = flow_resolve_selected_links($selectedLinks);
+    if (empty($links)) {
+        return null;
+    }
+
+    $rrdtoolBin = isset($rrdtool) && $rrdtool !== '' ? $rrdtool : 'rrdtool';
+    $command = escapeshellcmd($rrdtoolBin)
+        . ' fetch ' . escapeshellarg($rrdfile)
+        . ' AVERAGE --start ' . (int)$start
+        . ' --end ' . (int)$end . ' 2>/dev/null';
+
+    $output = shell_exec($command);
+    if (!is_string($output) || trim($output) === '') {
+        return null;
+    }
+
+    $lines = preg_split('/\r\n|\r|\n/', trim($output));
+    if (count($lines) < 2) {
+        return null;
+    }
+
+    $header = preg_split('/\s+/', trim(array_shift($lines)));
+    if (empty($header)) {
+        return null;
+    }
+
+    $prefix = ($ipversion == 6) ? 'v6_' : '';
+    $wanted = array();
+    foreach ($links as $tag) {
+        $wanted[$tag . '_' . $prefix . 'in'] = 'in';
+        $wanted[$tag . '_' . $prefix . 'out'] = 'out';
+    }
+
+    $indexes = array();
+    foreach ($header as $index => $name) {
+        if (isset($wanted[$name])) {
+            $indexes[$index] = $wanted[$name];
+        }
+    }
+
+    if (empty($indexes)) {
+        return null;
+    }
+
+    $stats = array(
+        'in' => array('min' => null, 'max' => null, 'current' => null),
+        'out' => array('min' => null, 'max' => null, 'current' => null),
+    );
+
+    foreach ($lines as $line) {
+        if (strpos($line, ':') === false) {
+            continue;
+        }
+
+        list(, $valuesRaw) = explode(':', $line, 2);
+        $values = preg_split('/\s+/', trim($valuesRaw));
+        if (empty($values)) {
+            continue;
+        }
+
+        $sum = array('in' => 0.0, 'out' => 0.0);
+        $seen = array('in' => false, 'out' => false);
+
+        foreach ($indexes as $index => $direction) {
+            if (!isset($values[$index])) {
+                continue;
+            }
+            $value = trim($values[$index]);
+            if ($value === '-nan' || $value === 'nan' || $value === '') {
+                continue;
+            }
+            $number = (float)$value * 8;
+            $sum[$direction] += $number;
+            $seen[$direction] = true;
+        }
+
+        foreach (array('in', 'out') as $direction) {
+            if (!$seen[$direction]) {
+                continue;
+            }
+            if ($stats[$direction]['min'] === null || $sum[$direction] < $stats[$direction]['min']) {
+                $stats[$direction]['min'] = $sum[$direction];
+            }
+            if ($stats[$direction]['max'] === null || $sum[$direction] > $stats[$direction]['max']) {
+                $stats[$direction]['max'] = $sum[$direction];
+            }
+            $stats[$direction]['current'] = $sum[$direction];
+        }
+    }
+
+    return $stats;
+}
+
+function flow_render_graph_stats($stats) {
+    if (!is_array($stats)) {
+        return '';
+    }
+
+    $html = '<div class="flow-graph-stats">';
+    foreach (array('in' => 'IN', 'out' => 'OUT') as $direction => $label) {
+        if (!isset($stats[$direction]) || $stats[$direction]['current'] === null) {
+            continue;
+        }
+        $html .= '<div class="flow-graph-stat-group">';
+        $html .= '<span class="flow-graph-stat-label">' . htmlspecialchars($label) . '</span>';
+        $html .= '<div class="flow-graph-stat-metrics">';
+        $html .= '<span>Min ' . htmlspecialchars(flow_format_bits($stats[$direction]['min'])) . '</span>';
+        $html .= '<span>Max ' . htmlspecialchars(flow_format_bits($stats[$direction]['max'])) . '</span>';
+        $html .= '<span>Atual ' . htmlspecialchars(flow_format_bits($stats[$direction]['current'])) . '</span>';
+        $html .= '</div>';
+        $html .= '</div>';
+    }
+    $html .= '</div>';
+    return $html;
 }
 
 function flow_render_hero($eyebrow, $title, $subtitle, $stats = array()) {
@@ -197,6 +409,8 @@ function flow_render_as_row($rank, $as, $asinfo, $nbytes, $start, $end, $peerusa
 
     $graph4 = getHTMLUrl($as, 4, $asinfo['descr'], $start, $end, $peerusage, $selectedLinks);
     $graph6 = $showv6 ? getHTMLUrl($as, 6, $asinfo['descr'], $start, $end, $peerusage, $selectedLinks) : '';
+    $graph4Stats = flow_fetch_rrd_graph_stats($as, 4, $start, $end, $peerusage, $selectedLinks);
+    $graph6Stats = $showv6 ? flow_fetch_rrd_graph_stats($as, 6, $start, $end, $peerusage, $selectedLinks) : null;
     $quickLinks = '';
 
     if (isset($customlinks) && is_array($customlinks)) {
@@ -217,18 +431,18 @@ function flow_render_as_row($rank, $as, $asinfo, $nbytes, $start, $end, $peerusa
     $html .= '<p>' . htmlspecialchars($asinfo['descr']) . '</p>';
     $html .= $quickLinks;
     $html .= '<div class="flow-micro-metrics">';
-    $html .= '<span>IPv4 IN ' . htmlspecialchars(format_bytes($in4)) . '</span>';
-    $html .= '<span>IPv4 OUT ' . htmlspecialchars(format_bytes($out4)) . '</span>';
+    $html .= '<span>IPv4 IN total ' . htmlspecialchars(format_bytes($in4)) . '</span>';
+    $html .= '<span>IPv4 OUT total ' . htmlspecialchars(format_bytes($out4)) . '</span>';
     if ($showv6) {
-        $html .= '<span>IPv6 IN ' . htmlspecialchars(format_bytes($in6)) . '</span>';
-        $html .= '<span>IPv6 OUT ' . htmlspecialchars(format_bytes($out6)) . '</span>';
+        $html .= '<span>IPv6 IN total ' . htmlspecialchars(format_bytes($in6)) . '</span>';
+        $html .= '<span>IPv6 OUT total ' . htmlspecialchars(format_bytes($out6)) . '</span>';
     }
     $html .= '</div>';
     $html .= '</div>';
     $html .= '<div class="flow-as-graphs">';
-    $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div>' . $graph4 . '</div>';
+    $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div>' . $graph4 . flow_render_graph_stats($graph4Stats) . '</div>';
     if ($showv6) {
-        $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div>' . $graph6 . '</div>';
+        $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div>' . $graph6 . flow_render_graph_stats($graph6Stats) . '</div>';
     }
     $html .= '</div>';
     $html .= '</article>';
