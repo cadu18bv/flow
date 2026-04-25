@@ -32,11 +32,45 @@ O instalador:
 - corrige o `asstatd.pl` para gravar uma base paralela de consulta por IP
 - instala `/usr/local/bin/asstats-add-router.sh` para anexar novos roteadores depois
 
-## Como usar
+## Instalacao rapida
+
+Baixe o projeto no servidor:
 
 ```bash
-chmod +x install_asstats_ubuntu.sh
+cd /opt
+sudo git clone https://github.com/cadu18bv/flow.git
+cd /opt/flow
+sudo chmod +x install_asstats_ubuntu.sh apply_flow_full_customization.sh
+```
+
+Rode o instalador com menu:
+
+```bash
+cd /opt/flow
 sudo ./install_asstats_ubuntu.sh
+```
+
+Ou rode direto no modo desejado:
+
+Instalar ou atualizar o pacote completo:
+
+```bash
+cd /opt/flow
+sudo ASSTATS_ACTION=install ./install_asstats_ubuntu.sh
+```
+
+Aplicar theme e corretivas em instalacao existente:
+
+```bash
+cd /opt/flow
+sudo ASSTATS_ACTION=theme ./install_asstats_ubuntu.sh
+```
+
+Adicionar mais um roteador/exportador no flow:
+
+```bash
+cd /opt/flow
+sudo ASSTATS_ACTION=add-router ./install_asstats_ubuntu.sh
 ```
 
 Ao iniciar, o script agora pergunta qual operacao voce quer executar:
@@ -51,6 +85,16 @@ Se preferir rodar sem menu, voce pode definir a acao antes:
 sudo ASSTATS_ACTION=install ./install_asstats_ubuntu.sh
 sudo ASSTATS_ACTION=theme ./install_asstats_ubuntu.sh
 sudo ASSTATS_ACTION=add-router ./install_asstats_ubuntu.sh
+```
+
+## Atualizar o repositorio
+
+Se o projeto ja estiver baixado no servidor:
+
+```bash
+cd /opt/flow
+sudo git pull
+sudo chmod +x install_asstats_ubuntu.sh apply_flow_full_customization.sh
 ```
 
 Variaveis opcionais:
