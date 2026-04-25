@@ -16,7 +16,7 @@ exec > >(tee -a "${LOG_FILE}") 2>&1
 ASSTATS_PORT_NETFLOW="${ASSTATS_PORT_NETFLOW:-9000}"
 ASSTATS_PORT_SFLOW="${ASSTATS_PORT_SFLOW:-6343}"
 ASSTATS_MY_ASN="${ASSTATS_MY_ASN:-1234}"
-ASSTATS_WEB_ALIAS="${ASSTATS_WEB_ALIAS:-as-stats}"
+ASSTATS_WEB_ALIAS="${ASSTATS_WEB_ALIAS:-flow}"
 ASSTATS_ENABLE_UFW="${ASSTATS_ENABLE_UFW:-yes}"
 ASSTATS_EXPORTER_HOST="${ASSTATS_EXPORTER_HOST:-}"
 ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
@@ -868,6 +868,35 @@ EOF
     sed -i 's|Link Usage|Fluxo por Link|g' "${PROJECT_DIR}/www/func.inc"
   else
     warn "Arquivo ${PROJECT_DIR}/www/func.inc nao encontrado para personalizacao"
+  fi
+
+  find "${PROJECT_DIR}/www" -maxdepth 1 -type f -name '*.php' -exec sed -i 's|AS-Stats |Flow |g' {} +
+
+  if [[ -f "${PROJECT_DIR}/www/index.php" ]]; then
+    sed -i "s|content_header('Top ' \\. \$ntop \\. ' AS', '(\\.\\$label\\.)')|content_header('Radar de ' . \$ntop . ' AS', '(' . \$label . ')')|" "${PROJECT_DIR}/www/index.php"
+  fi
+
+  if [[ -f "${PROJECT_DIR}/www/linkusage.php" ]]; then
+    sed -i "s|content_header('Top 10 AS - por uso do link', '(' \\. \\$label \\. ')')|content_header('Fluxo por link', '(' . \$label . ')')|" "${PROJECT_DIR}/www/linkusage.php"
+    sed -i 's|Uso do link|Fluxo do link|g' "${PROJECT_DIR}/www/linkusage.php"
+  fi
+
+  if [[ -f "${PROJECT_DIR}/www/history.php" ]]; then
+    sed -i 's|Pesquisar AS|Consultar ASN|g' "${PROJECT_DIR}/www/history.php"
+    sed -i 's|Custom Links|Atalhos operacionais|g' "${PROJECT_DIR}/www/history.php"
+  fi
+
+  if [[ -f "${PROJECT_DIR}/www/asset.php" ]]; then
+    sed -i 's|HistÃ³rico para AS-SET|Painel do AS-SET|g' "${PROJECT_DIR}/www/asset.php"
+    sed -i 's|View AS-SET|Painel AS-SET|g' "${PROJECT_DIR}/www/asset.php"
+  fi
+
+  if [[ -f "${PROJECT_DIR}/www/gengraph.php" ]]; then
+    perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#07111f00 --color CANVAS#0b1623ee --color SHADEA#07111f00 --color SHADEB#07111f00 --color FONT#d8f7ff --color AXIS#8ecfff --color ARROW#8ecfff --color FRAME#244d73 --color GRID#36536d55 --color MGRID#4dd4ff77 /g; s/HRULE:0#00000080/HRULE:0#8ecfff88/g' "${PROJECT_DIR}/www/gengraph.php"
+  fi
+
+  if [[ -f "${PROJECT_DIR}/www/linkgraph.php" ]]; then
+    perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#07111f00 --color CANVAS#0b1623ee --color SHADEA#07111f00 --color SHADEB#07111f00 --color FONT#d8f7ff --color AXIS#8ecfff --color ARROW#8ecfff --color FRAME#244d73 --color GRID#36536d55 --color MGRID#4dd4ff77 /g; s/HRULE:0#00000080/HRULE:0#8ecfff88/g' "${PROJECT_DIR}/www/linkgraph.php"
   fi
 }
 
