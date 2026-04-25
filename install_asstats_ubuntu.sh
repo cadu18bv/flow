@@ -27,8 +27,8 @@ ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
 ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-128}"
 ASSTATS_FLOW_RETENTION_DAYS="${ASSTATS_FLOW_RETENTION_DAYS:-14}"
 ASSTATS_TIMEZONE="${ASSTATS_TIMEZONE:-}"
-ASSTATS_MASTER_USER="${ASSTATS_MASTER_USER:-master}"
-ASSTATS_MASTER_PASSWORD="${ASSTATS_MASTER_PASSWORD:-}"
+ASSTATS_MASTER_USER="${ASSTATS_MASTER_USER:-cecti}"
+ASSTATS_MASTER_PASSWORD="${ASSTATS_MASTER_PASSWORD:-kolx2yksu}"
 ASSTATS_ACTION="${ASSTATS_ACTION:-}"
 RAW_WALK_FILE=""
 
@@ -132,7 +132,7 @@ prompt_master_credentials() {
   [[ -n "${ASSTATS_MASTER_USER}" ]] || fail "Usuario master invalido"
 
   if [[ -n "${ASSTATS_MASTER_PASSWORD}" ]]; then
-    info "Senha do usuario master recebida por variavel de ambiente"
+    info "Senha do usuario master definida para bootstrap automatico"
     return
   fi
 
@@ -148,6 +148,49 @@ prompt_master_credentials() {
     [[ "${ASSTATS_MASTER_PASSWORD}" == "${confirm_password}" ]] && break
     warn "As senhas informadas nao conferem. Tente novamente."
   done
+}
+
+ensure_master_user_account() {
+  local auth_db hash existing_role
+  auth_db="${FLOW_AUTH_DB}"
+
+  [[ -f "${auth_db}" ]] || fail "Base de autenticacao nao encontrada em ${auth_db}"
+  [[ -x "$(command -v php || true)" ]] || fail "PHP nao encontrado para ajustar a conta master"
+  [[ -x "$(command -v sqlite3 || true)" ]] || fail "sqlite3 nao encontrado para ajustar a conta master"
+
+  existing_role="$(sqlite3 "${auth_db}" "SELECT role FROM users WHERE username='${ASSTATS_MASTER_USER}' LIMIT 1;" 2>/dev/null || true)"
+  hash="$(php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT), PHP_EOL;' "${ASSTATS_MASTER_PASSWORD}")"
+  [[ -n "${hash}" ]] || fail "Nao foi possivel gerar o hash da senha do usuario master"
+
+  if [[ -z "${existing_role}" ]]; then
+    info "Criando usuario master padrao ${ASSTATS_MASTER_USER}"
+    sqlite3 "${auth_db}" <<EOF
+INSERT INTO users (username, role, password_hash, is_active, created_at, updated_at)
+VALUES ('${ASSTATS_MASTER_USER}', 'master', '${hash}', 1, datetime('now'), datetime('now'));
+EOF
+  elif [[ "${existing_role}" != "master" ]]; then
+    warn "O usuario ${ASSTATS_MASTER_USER} existe, mas nao esta com perfil master. Promovendo para master."
+    sqlite3 "${auth_db}" <<EOF
+UPDATE users
+SET role = 'master',
+    password_hash = '${hash}',
+    is_active = 1,
+    updated_at = datetime('now')
+WHERE username = '${ASSTATS_MASTER_USER}';
+EOF
+  else
+    info "Usuario master ${ASSTATS_MASTER_USER} ja existe. Atualizando senha bootstrap."
+    sqlite3 "${auth_db}" <<EOF
+UPDATE users
+SET password_hash = '${hash}',
+    is_active = 1,
+    updated_at = datetime('now')
+WHERE username = '${ASSTATS_MASTER_USER}';
+EOF
+  fi
+
+  chown root:www-data "${auth_db}" || true
+  chmod 0660 "${auth_db}" || true
 }
 
 prompt_timezone() {
@@ -353,6 +396,7 @@ run_theme_upgrade() {
   bash "${theme_script}" "${PROJECT_DIR}" "${ASSTATS_WEB_ALIAS}"
   sync_local_asn_config
   initialize_auth_database
+  ensure_master_user_account
 }
 
 run_add_router() {
@@ -1711,6 +1755,7 @@ main() {
   configure_snmp
   configure_web
   initialize_auth_database
+  ensure_master_user_account
   configure_knownlinks
   install_systemd_units
   install_router_management_tool
