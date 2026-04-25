@@ -18,6 +18,24 @@ function flow_noc_db_open() {
     }
 }
 
+function flow_noc_db_health($db) {
+    $health = array('ready' => false, 'rows' => 0, 'last_seen' => null);
+    if (!$db instanceof SQLite3) {
+        return $health;
+    }
+    $table = @$db->querySingle("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'flow_events' LIMIT 1");
+    if ($table !== 'flow_events') {
+        return $health;
+    }
+    $health['ready'] = true;
+    $row = @$db->querySingle('SELECT COUNT(*) AS rows, MAX(minute_ts) AS last_seen FROM flow_events', true);
+    if (is_array($row)) {
+        $health['rows'] = isset($row['rows']) ? (int)$row['rows'] : 0;
+        $health['last_seen'] = isset($row['last_seen']) && $row['last_seen'] !== null ? (int)$row['last_seen'] : null;
+    }
+    return $health;
+}
+
 function flow_noc_selected_links($knownlinks) {
     $selected = array();
     foreach ($knownlinks as $link) {
@@ -216,10 +234,10 @@ function flow_noc_geolocate_ip($ip, &$cache) {
 function flow_noc_query_remote_ips($db, $windowStart, $selectedLinks, $limit) {
     $sql = "
         SELECT
-            CASE WHEN lower(direction) = 'in' THEN src_ip ELSE dst_ip END AS remote_ip,
-            MAX(CASE WHEN lower(direction) = 'in' THEN src_asn ELSE dst_asn END) AS remote_asn,
+            CASE WHEN lower(direction) = 'out' THEN dst_ip ELSE src_ip END AS remote_ip,
+            MAX(CASE WHEN lower(direction) = 'out' THEN dst_asn ELSE src_asn END) AS remote_asn,
             COUNT(*) AS events,
-            COUNT(DISTINCT CASE WHEN lower(direction) = 'in' THEN dst_ip ELSE src_ip END) AS local_ips,
+            COUNT(DISTINCT CASE WHEN lower(direction) = 'out' THEN src_ip ELSE dst_ip END) AS local_ips,
             COUNT(DISTINCT link_tag) AS links,
             SUM(bytes) AS total_bytes,
             SUM(samples) AS total_samples,
@@ -417,10 +435,14 @@ $countryTotals = array();
 $geoPoints = array();
 $unresolved = 0;
 $cache = flow_noc_geo_cache_read();
+$dbHealth = array('ready' => false, 'rows' => 0, 'last_seen' => null);
 
 if ($db) {
-    $traceRows = flow_noc_query_remote_ips($db, $windowStart, $selectedLinks, $limit);
-    list($traceRows, $countryTotals, $geoPoints, $unresolved) = flow_noc_enrich_rows($traceRows, $cache);
+    $dbHealth = flow_noc_db_health($db);
+    if ($dbHealth['ready']) {
+        $traceRows = flow_noc_query_remote_ips($db, $windowStart, $selectedLinks, $limit);
+        list($traceRows, $countryTotals, $geoPoints, $unresolved) = flow_noc_enrich_rows($traceRows, $cache);
+    }
     $db->close();
     flow_noc_geo_cache_write($cache);
 }
@@ -430,6 +452,7 @@ $heroStats = array(
     array('label' => 'IPs geolocalizados', 'value' => (string)count($geoPoints)),
     array('label' => 'Paises visiveis', 'value' => (string)count($countryTotals)),
     array('label' => 'Nao resolvidos', 'value' => (string)$unresolved),
+    array('label' => 'Eventos na base', 'value' => number_format((int)$dbHealth['rows'], 0, ',', '.')),
 );
 
 flow_render_shell_start('Flow | NOC', 'noc');
@@ -446,7 +469,7 @@ echo flow_render_panel('Controles do NOC', flow_render_filter_form($hours, $limi
 echo flow_render_panel('Links monitorados', flow_render_legend_form($knownlinks, $selectedLinks, $hours, $limit, 'noc.php'), 'fa-random');
 echo flow_render_panel(
     'Fonte de geolocalizacao',
-    '<div class="flow-copy-block"><p>Os IPs publicos sao resolvidos sob demanda e ficam em cache local. Enderecos privados aparecem como LAN. Quando o servico externo nao responde, o painel mantem a trilha tecnica sem geolocalizacao.</p></div>',
+    '<div class="flow-copy-block"><p>Os IPs publicos sao resolvidos sob demanda e ficam em cache local. Enderecos privados aparecem como LAN. Quando o servico externo nao responde, o painel mantem a trilha tecnica sem geolocalizacao.</p><p>Base: ' . htmlspecialchars($dbHealth['ready'] ? 'flow_events pronta' : 'flow_events indisponivel') . ' | Ultima amostra: ' . htmlspecialchars($dbHealth['last_seen'] ? date('d/m H:i', (int)$dbHealth['last_seen']) : 'sem dados') . '</p></div>',
     'fa-globe'
 );
 echo '</div>';

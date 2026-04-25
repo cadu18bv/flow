@@ -275,6 +275,23 @@ function flow_query_open_db($dbPath, &$error = null) {
     }
 }
 
+function flow_query_has_events_table($db) {
+    if (!$db instanceof SQLite3) {
+        return false;
+    }
+    $exists = @$db->querySingle("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'flow_events' LIMIT 1");
+    return $exists === 'flow_events';
+}
+
+function flow_query_register_ip_matcher($db) {
+    if (!$db instanceof SQLite3) {
+        return false;
+    }
+    return @$db->createFunction('flow_ip_filter_match', function ($candidate, $filter) {
+        return flow_ip_matches_filter($candidate, $filter) ? 1 : 0;
+    }, 2);
+}
+
 function flow_query_bind_filters($stmt, $windowStart, $queryIp, $queryLink, $queryAsn) {
     if (!$stmt) {
         return false;
@@ -515,6 +532,11 @@ function flow_query_pipeline_snapshot($dbPath) {
         $snapshot['db_ready'] = false;
         return $snapshot;
     }
+    if (!flow_query_has_events_table($db)) {
+        $snapshot['db_ready'] = false;
+        $db->close();
+        return $snapshot;
+    }
 
     $row = @$db->querySingle('SELECT COUNT(*) AS total_rows, MAX(minute_ts) AS last_seen FROM flow_events', true);
     if (is_array($row)) {
@@ -527,7 +549,7 @@ function flow_query_pipeline_snapshot($dbPath) {
         $recentStmt->bindValue(':start', time() - 3600, SQLITE3_INTEGER);
         $recentResult = @$recentStmt->execute();
         if ($recentResult) {
-            $recentRow = $recentResult->fetchArray(SQLITE3_ASSOC);
+            $recentRow = @$recentResult->fetchArray(SQLITE3_ASSOC);
             if (is_array($recentRow)) {
                 $snapshot['recent_rows'] = isset($recentRow['recent_rows']) ? (int)$recentRow['recent_rows'] : 0;
             }
@@ -583,9 +605,13 @@ if ($queryIp !== '') {
         $db = flow_query_open_db($dbPath, $dbError);
         if (!$db) {
             $searchError = $dbError !== '' ? $dbError : 'Nao foi possivel abrir a base de eventos por IP.';
+        } elseif (!flow_query_has_events_table($db)) {
+            $searchError = 'A base flow_events.db existe, mas a tabela flow_events ainda nao foi criada pelo coletor.';
+            $db->close();
+        } elseif (!flow_query_register_ip_matcher($db)) {
+            $searchError = 'Nao foi possivel habilitar o filtro de IP/CIDR no SQLite.';
+            $db->close();
         } else {
-            $db->createFunction('flow_ip_filter_match', 'flow_ip_matches_filter', 2);
-
             $where = 'minute_ts >= :start';
             if ($queryMode === 'src') {
                 $where .= ' AND flow_ip_filter_match(src_ip, :ip_filter) = 1';
@@ -629,7 +655,7 @@ if ($queryIp !== '') {
             flow_query_bind_filters($summaryStmt, $windowStart, $queryIp, $queryLink, $queryAsn);
             $summaryResult = flow_query_execute_assoc($summaryStmt, $searchError, $queryFailureMessage);
             if ($summaryResult !== false) {
-                $summaryRow = $summaryResult->fetchArray(SQLITE3_ASSOC);
+                $summaryRow = @$summaryResult->fetchArray(SQLITE3_ASSOC);
                 if (is_array($summaryRow)) {
                     $summary = array_merge($summary, $summaryRow);
                 }
@@ -657,7 +683,7 @@ if ($queryIp !== '') {
                 $timelineResult = flow_query_execute_assoc($timelineStmt, $searchError, $queryFailureMessage);
                 if ($timelineResult !== false) {
                     $timelinePoints = array();
-                    while ($row = $timelineResult->fetchArray(SQLITE3_ASSOC)) {
+                    while ($row = @$timelineResult->fetchArray(SQLITE3_ASSOC)) {
                         $timelinePoints[(int)$row['minute_ts']] = (int)$row['total_bytes'];
                     }
                     $chartHtml = flow_render_query_chart($timelinePoints);
@@ -681,7 +707,7 @@ if ($queryIp !== '') {
                     $counterpartsResult = flow_query_execute_assoc($counterpartsStmt, $searchError, $queryFailureMessage);
                     if ($counterpartsResult !== false) {
                         $counterpartRows = array();
-                        while ($row = $counterpartsResult->fetchArray(SQLITE3_ASSOC)) {
+                        while ($row = @$counterpartsResult->fetchArray(SQLITE3_ASSOC)) {
                             $counterpartRows[] = array(
                                 '<span class="flow-pill">' . htmlspecialchars($row['counterpart_ip']) . '</span>',
                                 flow_render_asn_link($row['counterpart_asn']),
@@ -720,7 +746,7 @@ if ($queryIp !== '') {
                     $recentResult = flow_query_execute_assoc($recentStmt, $searchError, $queryFailureMessage);
                     if ($recentResult !== false) {
                         $recentRows = array();
-                        while ($row = $recentResult->fetchArray(SQLITE3_ASSOC)) {
+                        while ($row = @$recentResult->fetchArray(SQLITE3_ASSOC)) {
                             $recentRows[] = array(
                                 htmlspecialchars(flow_format_query_time($row['minute_ts'])),
                                 flow_render_link_badge($row['link_tag']),

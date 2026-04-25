@@ -69,10 +69,49 @@ function flow_dashboard_db_open() {
         $db = new SQLite3($dbPath, SQLITE3_OPEN_READONLY);
         $db->busyTimeout(2000);
         @$db->exec('PRAGMA busy_timeout = 2000');
+        @$db->createFunction('flow_dashboard_ip_match', 'flow_dashboard_ip_matches_filter', 2);
         return $db;
     } catch (Exception $exception) {
         return null;
     }
+}
+
+function flow_dashboard_ip_matches_filter($candidate, $filter) {
+    $candidate = trim((string)$candidate);
+    $filter = trim((string)$filter);
+    if ($candidate === '' || $filter === '') {
+        return 0;
+    }
+    if (strpos($filter, '/') === false) {
+        return $candidate === $filter ? 1 : 0;
+    }
+
+    list($network, $prefix) = array_pad(explode('/', $filter, 2), 2, null);
+    if (!ctype_digit((string)$prefix)) {
+        return 0;
+    }
+    $candidateBin = @inet_pton($candidate);
+    $networkBin = @inet_pton($network);
+    if ($candidateBin === false || $networkBin === false || strlen($candidateBin) !== strlen($networkBin)) {
+        return 0;
+    }
+
+    $bits = (int)$prefix;
+    $maxBits = strlen($candidateBin) * 8;
+    if ($bits < 0 || $bits > $maxBits) {
+        return 0;
+    }
+    $bytes = intdiv($bits, 8);
+    $remainder = $bits % 8;
+    if ($bytes > 0 && substr($candidateBin, 0, $bytes) !== substr($networkBin, 0, $bytes)) {
+        return 0;
+    }
+    if ($remainder === 0) {
+        return 1;
+    }
+
+    $mask = (0xff << (8 - $remainder)) & 0xff;
+    return ((ord($candidateBin[$bytes]) & $mask) === (ord($networkBin[$bytes]) & $mask)) ? 1 : 0;
 }
 
 function flow_dashboard_in_clause($values, $prefix) {
@@ -283,14 +322,29 @@ function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
 
     $classifiedConditions = $poolConditions;
     $classifiedBindings = $poolBindings;
+    $signatureConditions = array();
     if (!empty($profile['remote_asns'])) {
-        $classifiedConditions[] = '(src_asn IN (' . flow_dashboard_in_clause($profile['remote_asns'], 'remote_asn_') . ') OR dst_asn IN (' . flow_dashboard_in_clause($profile['remote_asns'], 'remote_asn_') . '))';
+        $signatureConditions[] = '(src_asn IN (' . flow_dashboard_in_clause($profile['remote_asns'], 'remote_asn_') . ') OR dst_asn IN (' . flow_dashboard_in_clause($profile['remote_asns'], 'remote_asn_') . '))';
         foreach (array_values($profile['remote_asns']) as $index => $asn) {
             $classifiedBindings[] = array('name' => ':remote_asn_' . $index, 'value' => (int)$asn, 'type' => SQLITE3_INTEGER);
         }
     }
+    if (!empty($profile['prefixes'])) {
+        $prefixParts = array();
+        foreach (array_values($profile['prefixes']) as $index => $prefix) {
+            $binding = ':cdn_prefix_' . $index;
+            $prefixParts[] = '(flow_dashboard_ip_match(src_ip, ' . $binding . ') = 1 OR flow_dashboard_ip_match(dst_ip, ' . $binding . ') = 1)';
+            $classifiedBindings[] = array('name' => $binding, 'value' => (string)$prefix, 'type' => SQLITE3_TEXT);
+        }
+        $signatureConditions[] = '(' . implode(' OR ', $prefixParts) . ')';
+    }
+    if (!empty($signatureConditions)) {
+        $classifiedConditions[] = '(' . implode(' OR ', $signatureConditions) . ')';
+    }
 
-    $classifiedTotals = flow_dashboard_sum_query($db, $classifiedConditions, $classifiedBindings, $hours);
+    $classifiedTotals = empty($signatureConditions)
+        ? array(0, 0, 0, 0)
+        : flow_dashboard_sum_query($db, $classifiedConditions, $classifiedBindings, $hours);
     $db->close();
     if ($classifiedTotals === false) {
         $classifiedTotals = array(0, 0, 0, 0);

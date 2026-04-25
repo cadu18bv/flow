@@ -18,6 +18,24 @@ function flow_ddos_db_open() {
     }
 }
 
+function flow_ddos_db_health($db) {
+    $health = array('ready' => false, 'rows' => 0, 'last_seen' => null);
+    if (!$db instanceof SQLite3) {
+        return $health;
+    }
+    $table = @$db->querySingle("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'flow_events' LIMIT 1");
+    if ($table !== 'flow_events') {
+        return $health;
+    }
+    $health['ready'] = true;
+    $row = @$db->querySingle('SELECT COUNT(*) AS rows, MAX(minute_ts) AS last_seen FROM flow_events', true);
+    if (is_array($row)) {
+        $health['rows'] = isset($row['rows']) ? (int)$row['rows'] : 0;
+        $health['last_seen'] = isset($row['last_seen']) && $row['last_seen'] !== null ? (int)$row['last_seen'] : null;
+    }
+    return $health;
+}
+
 function flow_ddos_selected_links($knownlinks) {
     $selected = array();
     foreach ($knownlinks as $link) {
@@ -114,7 +132,6 @@ function flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit) {
             COUNT(DISTINCT minute_ts) AS active_minutes
         FROM flow_events
         WHERE minute_ts >= :start
-          AND lower(direction) = 'in'
           " . flow_ddos_link_clause($selectedLinks, 'target_link_') . "
         GROUP BY dst_ip
         HAVING SUM(bytes) > 0
@@ -198,7 +215,6 @@ function flow_ddos_query_bursts($db, $windowStart, $selectedLinks, $limit) {
             SUM(samples) AS total_samples
         FROM flow_events
         WHERE minute_ts >= :start
-          AND lower(direction) = 'in'
           " . flow_ddos_link_clause($selectedLinks, 'burst_link_') . "
         GROUP BY minute_ts, link_tag, dst_ip
         HAVING SUM(bytes) > 0
@@ -339,11 +355,15 @@ $db = flow_ddos_db_open();
 $targets = array();
 $attackers = array();
 $bursts = array();
+$dbHealth = array('ready' => false, 'rows' => 0, 'last_seen' => null);
 
 if ($db) {
-    $targets = flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit);
-    $attackers = flow_ddos_query_attackers($db, $windowStart, $selectedLinks, $limit);
-    $bursts = flow_ddos_query_bursts($db, $windowStart, $selectedLinks, 12);
+    $dbHealth = flow_ddos_db_health($db);
+    if ($dbHealth['ready']) {
+        $targets = flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit);
+        $attackers = flow_ddos_query_attackers($db, $windowStart, $selectedLinks, $limit);
+        $bursts = flow_ddos_query_bursts($db, $windowStart, $selectedLinks, 12);
+    }
     $db->close();
 }
 
@@ -353,6 +373,7 @@ $heroStats = array(
     array('label' => 'Vitimas suspeitas', 'value' => (string)$overview['suspect_victims']),
     array('label' => 'Emissores suspeitos', 'value' => (string)$overview['suspect_attackers']),
     array('label' => 'Peak samples/min', 'value' => (string)$overview['peak_samples']),
+    array('label' => 'Eventos na base', 'value' => number_format((int)$dbHealth['rows'], 0, ',', '.')),
 );
 
 flow_render_shell_start('Flow | DDoS', 'ddos');
@@ -369,7 +390,7 @@ echo flow_render_panel('Controles de observacao', flow_render_filter_form($hours
 echo flow_render_panel('Links monitorados', flow_render_legend_form($knownlinks, $selectedLinks, $hours, $limit, 'ddos.php'), 'fa-random');
 echo flow_render_panel(
     'Heuristica aplicada',
-    '<div class="flow-copy-block"><p>Os alvos sao ranqueados por numero de origens unicas, samples agregados e persistencia. Os emissores consideram fan-out de destinos, links tocados e volume total observado.</p></div>',
+    '<div class="flow-copy-block"><p>Os alvos sao ranqueados por numero de origens unicas, samples agregados e persistencia. A leitura agora usa todo evento de destino disponivel, sem depender exclusivamente de direction=in.</p><p>Base: ' . htmlspecialchars($dbHealth['ready'] ? 'flow_events pronta' : 'flow_events indisponivel') . ' | Ultima amostra: ' . htmlspecialchars($dbHealth['last_seen'] ? date('d/m H:i', (int)$dbHealth['last_seen']) : 'sem dados') . '</p></div>',
     'fa-info-circle'
 );
 echo '</div>';

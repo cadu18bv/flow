@@ -39,7 +39,135 @@ function flow_read_knownlinks_text() {
 function flow_write_knownlinks_text($text) {
     $text = (string)$text;
     $text = str_replace(array("\r\n", "\r"), "\n", $text);
-    file_put_contents(flow_knownlinks_path(), rtrim($text) . "\n");
+    return @file_put_contents(flow_knownlinks_path(), rtrim($text) . "\n") !== false;
+}
+
+function flow_cdn_profiles_path() {
+    return flow_runtime_dir() . DIRECTORY_SEPARATOR . 'dashboard-local-cdn.json';
+}
+
+function flow_default_cdn_profiles_text() {
+    $example = array(
+        'netflix' => array(
+            'links' => array('Vlanif2982', 'Vlanif347'),
+            'remote_asns' => array(2906, 40027, 55095, 394406),
+            'local_asns' => array(),
+            'prefixes' => array(),
+            'note' => 'Ajuste links e assinaturas conforme a entrega local do cliente.',
+        ),
+        'facebook' => array(
+            'links' => array('Vlanif2982', 'Vlanif347'),
+            'remote_asns' => array(32934, 63293),
+            'local_asns' => array(),
+            'prefixes' => array(),
+            'note' => '',
+        ),
+        'google' => array(
+            'links' => array('Vlanif2982', 'Vlanif347'),
+            'remote_asns' => array(15169, 36040, 139070),
+            'local_asns' => array(),
+            'prefixes' => array(),
+            'note' => '',
+        ),
+    );
+    return json_encode($example, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+}
+
+function flow_read_cdn_profiles_text() {
+    $path = flow_cdn_profiles_path();
+    if (!is_file($path)) {
+        return flow_default_cdn_profiles_text();
+    }
+    $content = @file_get_contents($path);
+    return $content === false || trim((string)$content) === '' ? flow_default_cdn_profiles_text() : (string)$content;
+}
+
+function flow_validate_cidr_prefix($prefix) {
+    $prefix = trim((string)$prefix);
+    if ($prefix === '' || strpos($prefix, '/') === false) {
+        return false;
+    }
+    list($network, $bits) = array_pad(explode('/', $prefix, 2), 2, null);
+    if (!ctype_digit((string)$bits) || filter_var($network, FILTER_VALIDATE_IP) === false) {
+        return false;
+    }
+    $max = strpos($network, ':') !== false ? 128 : 32;
+    return (int)$bits >= 0 && (int)$bits <= $max;
+}
+
+function flow_validate_cdn_profiles_text($text) {
+    $decoded = json_decode((string)$text, true);
+    if (!is_array($decoded)) {
+        return array(false, 'JSON de CDN invalido. Revise virgulas, chaves e aspas.');
+    }
+
+    $normalized = array();
+    foreach ($decoded as $provider => $profile) {
+        $provider = trim((string)$provider);
+        if ($provider === '' || !preg_match('/^[a-z0-9._-]+$/i', $provider)) {
+            return array(false, 'Nome de provedor invalido: ' . $provider);
+        }
+        if (!is_array($profile)) {
+            return array(false, 'O perfil ' . $provider . ' precisa ser um objeto JSON.');
+        }
+
+        $item = array(
+            'links' => array(),
+            'remote_asns' => array(),
+            'local_asns' => array(),
+            'prefixes' => array(),
+            'note' => isset($profile['note']) ? trim((string)$profile['note']) : '',
+        );
+
+        foreach (array('links', 'prefixes') as $field) {
+            if (isset($profile[$field]) && !is_array($profile[$field])) {
+                return array(false, $field . ' em ' . $provider . ' precisa ser uma lista.');
+            }
+            foreach ((array)($profile[$field] ?? array()) as $value) {
+                $value = trim((string)$value);
+                if ($value === '') {
+                    continue;
+                }
+                if ($field === 'links' && !preg_match('/^[A-Za-z0-9._:-]+$/', $value)) {
+                    return array(false, 'Link invalido em ' . $provider . ': ' . $value);
+                }
+                if ($field === 'prefixes' && !flow_validate_cidr_prefix($value)) {
+                    return array(false, 'Prefixo invalido em ' . $provider . ': ' . $value);
+                }
+                $item[$field][] = $value;
+            }
+            $item[$field] = array_values(array_unique($item[$field]));
+        }
+
+        foreach (array('remote_asns', 'local_asns') as $field) {
+            if (isset($profile[$field]) && !is_array($profile[$field])) {
+                return array(false, $field . ' em ' . $provider . ' precisa ser uma lista.');
+            }
+            foreach ((array)($profile[$field] ?? array()) as $asn) {
+                $asn = trim((string)$asn);
+                if ($asn === '') {
+                    continue;
+                }
+                if (!ctype_digit($asn)) {
+                    return array(false, 'ASN invalido em ' . $provider . ': ' . $asn);
+                }
+                $item[$field][] = (int)$asn;
+            }
+            $item[$field] = array_values(array_unique($item[$field]));
+        }
+
+        $normalized[$provider] = $item;
+    }
+
+    return array(true, json_encode($normalized, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+}
+
+function flow_write_cdn_profiles_text($text) {
+    $dir = dirname(flow_cdn_profiles_path());
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0770, true);
+    }
+    return @file_put_contents(flow_cdn_profiles_path(), (string)$text) !== false;
 }
 
 function flow_knownlinks_backup_dir() {
@@ -106,7 +234,9 @@ function flow_restore_knownlinks_backup($basename) {
     }
 
     flow_backup_knownlinks_snapshot('pre-rollback');
-    flow_write_knownlinks_text($content);
+    if (!flow_write_knownlinks_text($content)) {
+        return array(false, 'Nao foi possivel gravar o knownlinks restaurado. Verifique permissoes do arquivo.');
+    }
     return array(true, $basename);
 }
 
@@ -299,10 +429,13 @@ function flow_config_handle_post() {
                 flow_auth_set_flash($message, 'error');
             } else {
                 flow_backup_knownlinks_snapshot('save');
-                flow_write_knownlinks_text($knownlinks);
-                flow_run_maintenance_action('refresh-collection');
-                flow_auth_audit('config.knownlinks.updated', 'Arquivo knownlinks salvo pelo painel', 'knownlinks');
-                flow_auth_set_flash('Arquivo knownlinks atualizado. Reinicie o coletor para aplicar.', 'success');
+                if (!flow_write_knownlinks_text($knownlinks)) {
+                    flow_auth_set_flash('Nao foi possivel gravar o knownlinks. Verifique permissao de escrita em ' . flow_knownlinks_path(), 'error');
+                } else {
+                    flow_run_maintenance_action('refresh-collection');
+                    flow_auth_audit('config.knownlinks.updated', 'Arquivo knownlinks salvo pelo painel', 'knownlinks');
+                    flow_auth_set_flash('Arquivo knownlinks atualizado e coleta reiniciada.', 'success');
+                }
             }
             break;
 
@@ -331,10 +464,25 @@ function flow_config_handle_post() {
             $current = rtrim(flow_read_knownlinks_text());
             $next = $current === '' ? $line : ($current . PHP_EOL . $line);
             flow_backup_knownlinks_snapshot('append');
-            flow_write_knownlinks_text($next);
-            flow_run_maintenance_action('refresh-collection');
-            flow_auth_audit('config.knownlinks.appended', 'Novo link anexado ao knownlinks', $payload['tag']);
-            flow_auth_set_flash('Novo link adicionado com sucesso ao knownlinks.', 'success');
+            if (!flow_write_knownlinks_text($next)) {
+                flow_auth_set_flash('Nao foi possivel adicionar o link. Verifique permissao de escrita em ' . flow_knownlinks_path(), 'error');
+            } else {
+                flow_run_maintenance_action('refresh-collection');
+                flow_auth_audit('config.knownlinks.appended', 'Novo link anexado ao knownlinks', $payload['tag']);
+                flow_auth_set_flash('Novo link ' . $payload['tag'] . ' adicionado ao knownlinks e coleta reiniciada.', 'success');
+            }
+            break;
+
+        case 'save_cdn_profiles':
+            list($ok, $payload) = flow_validate_cdn_profiles_text((string)($_POST['cdn_profiles'] ?? ''));
+            if (!$ok) {
+                flow_auth_set_flash($payload, 'error');
+            } elseif (!flow_write_cdn_profiles_text($payload)) {
+                flow_auth_set_flash('Nao foi possivel gravar os perfis de CDN em ' . flow_cdn_profiles_path(), 'error');
+            } else {
+                flow_auth_audit('config.cdn_profiles.updated', 'Perfis de CDN local atualizados pelo painel', 'dashboard-local-cdn.json');
+                flow_auth_set_flash('Perfis de CDN local atualizados com sucesso.', 'success');
+            }
             break;
 
         case 'rollback_knownlinks':
@@ -489,6 +637,7 @@ flow_config_handle_post();
 
 $flashHtml = flow_render_flash_message();
 $localAsn = flow_read_local_asn();
+$cdnProfilesText = flow_read_cdn_profiles_text();
 $knownlinksText = flow_read_knownlinks_text();
 $knownlinksEntries = flow_knownlinks_entries();
 $knownlinksBackups = array_slice(flow_list_knownlinks_backups(), 0, 20);
@@ -528,6 +677,14 @@ $knownlinksBody .= '<textarea class="flow-input flow-textarea" name="knownlinks"
 $knownlinksBody .= '<button class="flow-button" type="submit">Salvar knownlinks</button>';
 $knownlinksBody .= '<span class="flow-search-hint">Use TAB entre as 6 colunas. A tela agora valida exporter, ifIndex, TAG, descricao, cor e sampling antes de salvar.</span>';
 $knownlinksBody .= '</form>';
+
+$cdnProfilesBody = '<form method="post" class="flow-form-stack">';
+$cdnProfilesBody .= '<input type="hidden" name="action" value="save_cdn_profiles">';
+$cdnProfilesBody .= '<label>Perfis de CDN local por cliente</label>';
+$cdnProfilesBody .= '<textarea class="flow-input flow-textarea" name="cdn_profiles">' . htmlspecialchars($cdnProfilesText) . '</textarea>';
+$cdnProfilesBody .= '<button class="flow-button" type="submit">Salvar perfis de CDN</button>';
+$cdnProfilesBody .= '<span class="flow-search-hint">Use links para limitar a VLAN/interface de CDN compartilhado. Use remote_asns ou prefixes para atribuir parte do trafego a Netflix, Meta, Google etc. O restante aparece como CDN compartilhado nao classificado.</span>';
+$cdnProfilesBody .= '</form>';
 
 $appendKnownlinkBody = '<form method="post" class="flow-form-stack">';
 $appendKnownlinkBody .= '<input type="hidden" name="action" value="append_knownlink">';
@@ -656,6 +813,7 @@ echo flow_render_panel('Manutencao controlada', $maintenanceBody, 'fa-wrench');
 echo flow_render_panel('Logs operacionais', $logBody, 'fa-file-text-o');
 echo flow_render_panel('Rollback de knownlinks', $backupBody, 'fa-history');
 echo flow_render_panel('Adicionar roteador / link', $appendKnownlinkBody, 'fa-plus-circle');
+echo flow_render_panel('Perfis de CDN local', $cdnProfilesBody, 'fa-cloud');
 echo flow_render_panel('Editor de knownlinks', $knownlinksBody, 'fa-code');
 echo '</div>';
 echo '</div>';
