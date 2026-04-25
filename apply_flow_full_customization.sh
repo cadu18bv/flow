@@ -2,12 +2,16 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${1:-/data/asstats}"
 WEB_ALIAS="${2:-flow}"
 WWW_DIR="${PROJECT_DIR}/www"
 FUNC_FILE="${WWW_DIR}/func.inc"
 CSS_FILE="${WWW_DIR}/css/custom.css"
 KNOWNLINKS_FILE="${PROJECT_DIR}/conf/knownlinks"
+ENV_FILE="${PROJECT_DIR}/flow-web.env"
+TEMPLATE_DIR="${SCRIPT_DIR}/flow_webui"
+COLLECTOR_PATCHER="${SCRIPT_DIR}/flow_patch_collector.py"
 
 require_file() {
   local path="$1"
@@ -407,15 +411,226 @@ patch_pages() {
 
 patch_graphs() {
   local replacement
-  replacement='--color BACK#07111f00 --color CANVAS#0b1623ee --color SHADEA#07111f00 --color SHADEB#07111f00 --color FONT#d8f7ff --color AXIS#8ecfff --color ARROW#8ecfff --color FRAME#244d73 --color GRID#36536d55 --color MGRID#4dd4ff77 '
+  replacement='--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#f3fbff --color AXIS#bfd6e4 --color ARROW#7fe6ff --color FRAME#213d57 --color GRID#2f516b4c --color MGRID#39d5ff84 '
 
   if [[ -f "${WWW_DIR}/gengraph.php" ]]; then
-    perl -0pi -e "s/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /${replacement}/g; s/HRULE:0#00000080/HRULE:0#8ecfff88/g" "${WWW_DIR}/gengraph.php"
+    perl -0pi -e "s/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /${replacement}/g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g" "${WWW_DIR}/gengraph.php"
   fi
 
   if [[ -f "${WWW_DIR}/linkgraph.php" ]]; then
-    perl -0pi -e "s/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /${replacement}/g; s/HRULE:0#00000080/HRULE:0#8ecfff88/g" "${WWW_DIR}/linkgraph.php"
+    perl -0pi -e "s/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /${replacement}/g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g" "${WWW_DIR}/linkgraph.php"
   fi
+}
+
+apply_flow_templates() {
+  require_file "${TEMPLATE_DIR}"
+  require_file "${TEMPLATE_DIR}/custom.css"
+  require_file "${TEMPLATE_DIR}/flow_ui.php"
+
+  install -m 0644 "${TEMPLATE_DIR}/custom.css" "${WWW_DIR}/css/custom.css"
+  install -m 0644 "${TEMPLATE_DIR}/flow_ui.php" "${WWW_DIR}/flow_ui.php"
+  install -m 0644 "${TEMPLATE_DIR}/index.php" "${WWW_DIR}/index.php"
+  install -m 0644 "${TEMPLATE_DIR}/linkusage.php" "${WWW_DIR}/linkusage.php"
+  install -m 0644 "${TEMPLATE_DIR}/history.php" "${WWW_DIR}/history.php"
+  install -m 0644 "${TEMPLATE_DIR}/ipsearch.php" "${WWW_DIR}/ipsearch.php"
+  install -m 0644 "${TEMPLATE_DIR}/asset.php" "${WWW_DIR}/asset.php"
+  install -m 0644 "${TEMPLATE_DIR}/ix.php" "${WWW_DIR}/ix.php"
+}
+
+apply_flow_collector_patch() {
+  [[ -f "${PROJECT_DIR}/bin/asstatd.pl" ]] || return 0
+  require_file "${COLLECTOR_PATCHER}"
+  python3 "${COLLECTOR_PATCHER}" "${PROJECT_DIR}/bin/asstatd.pl"
+}
+
+configure_runtime_support() {
+  local flow_db flow_retention
+  flow_db="${PROJECT_DIR}/asstats/flow_events.db"
+  flow_retention="${ASSTATS_FLOW_RETENTION_DAYS:-14}"
+
+  if [[ -f /etc/default/asstats ]]; then
+    grep -q '^ASSTATS_FLOW_DB=' /etc/default/asstats && \
+      sed -i "s|^ASSTATS_FLOW_DB=.*|ASSTATS_FLOW_DB=${flow_db}|" /etc/default/asstats || \
+      printf 'ASSTATS_FLOW_DB=%s\n' "${flow_db}" >> /etc/default/asstats
+
+    grep -q '^ASSTATS_FLOW_RETENTION_DAYS=' /etc/default/asstats && \
+      sed -i "s|^ASSTATS_FLOW_RETENTION_DAYS=.*|ASSTATS_FLOW_RETENTION_DAYS=${flow_retention}|" /etc/default/asstats || \
+      printf 'ASSTATS_FLOW_RETENTION_DAYS=%s\n' "${flow_retention}" >> /etc/default/asstats
+  fi
+
+  if [[ -f /usr/local/bin/asstatsd-wrapper.sh ]]; then
+    cat > /usr/local/bin/asstatsd-wrapper.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source /etc/default/asstats
+
+KNOWNLINKS="${ASSTATS_PROJECT_DIR}/conf/knownlinks"
+RRD_DIR="${ASSTATS_PROJECT_DIR}/rrd"
+
+[[ -f "${KNOWNLINKS}" ]] || { echo "Arquivo knownlinks nao encontrado: ${KNOWNLINKS}" >&2; exit 1; }
+
+exec perl "${ASSTATS_PROJECT_DIR}/bin/asstatd.pl" \
+  -r "${RRD_DIR}" \
+  -k "${KNOWNLINKS}" \
+  -p "${ASSTATS_PORT_NETFLOW}" \
+  -P "${ASSTATS_PORT_SFLOW}" \
+  -a "${ASSTATS_MY_ASN}" \
+  -q "${ASSTATS_FLOW_DB}" \
+  -R "${ASSTATS_FLOW_RETENTION_DAYS}"
+EOF
+    chmod +x /usr/local/bin/asstatsd-wrapper.sh
+  fi
+}
+
+install_router_management_tool() {
+  cat > /usr/local/bin/asstats-add-router.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="${1:-/data/asstats}"
+KNOWNLINKS_FILE="${PROJECT_DIR}/conf/knownlinks"
+DEFAULTS_FILE="/etc/default/asstats"
+
+[[ -f "${KNOWNLINKS_FILE}" ]] || { echo "Arquivo knownlinks nao encontrado: ${KNOWNLINKS_FILE}" >&2; exit 1; }
+[[ -f "${DEFAULTS_FILE}" ]] && source "${DEFAULTS_FILE}"
+
+sampling_default="${ASSTATS_SAMPLING_RATE:-128}"
+
+read -r -p "IP ou hostname do novo exportador: " exporter_host
+[[ -n "${exporter_host}" ]] || { echo "Exportador nao informado" >&2; exit 1; }
+
+read -r -p "Comunidade SNMP [${ASSTATS_SNMP_COMMUNITY:-public}]: " snmp_community
+snmp_community="${snmp_community:-${ASSTATS_SNMP_COMMUNITY:-public}}"
+
+read -r -p "Sampling padrao [${sampling_default}]: " sampling_rate
+sampling_rate="${sampling_rate:-${sampling_default}}"
+
+tmp_walk="$(mktemp)"
+tmp_preview="$(mktemp)"
+trap 'rm -f "${tmp_walk}" "${tmp_preview}"' EXIT
+
+echo "[INFO] Executando descoberta SNMP em ${exporter_host}"
+snmpwalk -v2c -c "${snmp_community}" "${exporter_host}" > "${tmp_walk}"
+
+declare -A IF_INDEXES=()
+declare -A IF_DESCRS=()
+declare -A IF_ALIASES=()
+declare -A USED_TAGS=()
+
+while IFS=$'\t' read -r _ _ tag _; do
+  [[ -n "${tag:-}" ]] && USED_TAGS["${tag}"]=1
+done < <(awk -F '\t' '!/^[[:space:]]*#/ && NF >= 4 { print $1 "\t" $2 "\t" $3 "\t" $4 }' "${KNOWNLINKS_FILE}")
+
+while IFS= read -r line; do
+  [[ "${line}" =~ (IF-MIB::ifIndex|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.1)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+  index="${BASH_REMATCH[2]}"
+  IF_INDEXES["${index}"]="${index}"
+done < "${tmp_walk}"
+
+while IFS= read -r line; do
+  [[ "${line}" =~ (IF-MIB::ifDescr|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.2)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+  index="${BASH_REMATCH[2]}"
+  value="${BASH_REMATCH[3]}"
+  value="${value#STRING: }"
+  value="${value#Hex-STRING: }"
+  value="${value#INTEGER: }"
+  value="${value#\"}"
+  value="${value%\"}"
+  IF_DESCRS["${index}"]="${value}"
+done < "${tmp_walk}"
+
+while IFS= read -r line; do
+  [[ "${line}" =~ (IF-MIB::ifAlias|IF-MIB::ifName|\.1\.3\.6\.1\.2\.1\.31\.1\.1\.1\.18|\.1\.3\.6\.1\.2\.1\.31\.1\.1\.1\.1)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+  index="${BASH_REMATCH[2]}"
+  value="${BASH_REMATCH[3]}"
+  value="${value#STRING: }"
+  value="${value#\"}"
+  value="${value%\"}"
+  IF_ALIASES["${index}"]="${value}"
+done < "${tmp_walk}"
+
+generate_tag() {
+  local ifindex="$1"
+  local candidate suffix
+  candidate="if${ifindex}"
+  if [[ -z "${USED_TAGS[${candidate}]:-}" ]]; then
+    USED_TAGS["${candidate}"]=1
+    printf '%s' "${candidate}"
+    return
+  fi
+
+  suffix=1
+  while :; do
+    candidate="if${ifindex}_${suffix}"
+    if [[ -z "${USED_TAGS[${candidate}]:-}" ]]; then
+      USED_TAGS["${candidate}"]=1
+      printf '%s' "${candidate}"
+      return
+    fi
+    suffix=$((suffix + 1))
+  done
+}
+
+cat > "${tmp_preview}" <<'PREVIEW'
+# novas interfaces para anexar
+PREVIEW
+
+color_palette=(1F78B4 33A02C E31A1C FF7F00 6A3D9A A6CEE3 B2DF8A FB9A99 CAB2D6 FDBF6F)
+color_index=0
+
+while IFS= read -r index; do
+  [[ -n "${IF_DESCRS[${index}]:-}" ]] || continue
+  description="${IF_ALIASES[${index}]:-${IF_DESCRS[${index}]}}"
+  tag="$(generate_tag "${index}")"
+  color="${color_palette[$((color_index % ${#color_palette[@]}))]}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${exporter_host}" \
+    "${index}" \
+    "${tag}" \
+    "${description}" \
+    "${color}" \
+    "${sampling_rate}" >> "${tmp_preview}"
+  color_index=$((color_index + 1))
+done < <(printf '%s\n' "${!IF_INDEXES[@]}" | sort -n)
+
+if ! grep -qvE '^\s*#|^\s*$' "${tmp_preview}"; then
+  echo "Nenhuma interface elegivel encontrada via SNMP para ${exporter_host}" >&2
+  exit 1
+fi
+
+echo
+echo "[INFO] Interfaces encontradas:"
+awk -F '\t' 'BEGIN { printf "%-16s %-8s %-14s %-42s %-8s %-8s\n", "EXPORTADOR", "IFINDEX", "TAG", "DESCRICAO", "COR", "SAMPLE" }
+  /^[[:space:]]*#/ { next }
+  NF >= 6 { printf "%-16s %-8s %-14s %-42s %-8s %-8s\n", $1, $2, $3, $4, $5, $6 }' "${tmp_preview}"
+echo
+
+read -r -p "Adicionar essas interfaces ao knownlinks? [Y/n]: " confirm
+confirm="${confirm:-Y}"
+case "${confirm}" in
+  Y|y|yes|YES) ;;
+  *)
+    echo "Operacao cancelada."
+    exit 0
+    ;;
+esac
+
+awk '!/^[[:space:]]*#/ && NF >= 6 { print }' "${tmp_preview}" >> "${KNOWNLINKS_FILE}"
+chmod 0644 "${KNOWNLINKS_FILE}"
+
+echo "[INFO] Reiniciando coletor e atualizando base web"
+systemctl restart asstatsd.service
+systemctl start asstats-extract.service || true
+
+echo
+echo "Roteador anexado com sucesso."
+echo "Arquivo atualizado: ${KNOWNLINKS_FILE}"
+echo "Valide com:"
+echo "  grep -n '${exporter_host}' ${KNOWNLINKS_FILE}"
+echo "  systemctl status asstatsd.service"
+EOF
+
+  chmod +x /usr/local/bin/asstats-add-router.sh
 }
 
 configure_alias() {
@@ -443,23 +658,48 @@ check_cdn_link() {
 
 reload_services() {
   systemctl reload apache2 2>/dev/null || true
+  systemctl restart asstatsd.service 2>/dev/null || true
+}
+
+export_web_url() {
+  local server_ip flow_web_url
+
+  server_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -z "${server_ip}" ]]; then
+    server_ip="$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)"
+  fi
+  if [[ -z "${server_ip}" ]]; then
+    server_ip="IP_DO_SERVIDOR"
+  fi
+
+  flow_web_url="http://${server_ip}/${WEB_ALIAS}/"
+  export FLOW_WEB_URL="${flow_web_url}"
+
+  cat > "${ENV_FILE}" <<EOF
+export FLOW_WEB_URL="${FLOW_WEB_URL}"
+export FLOW_WEB_ALIAS="${WEB_ALIAS}"
+EOF
 }
 
 main() {
   require_file "${WWW_DIR}"
   require_file "${FUNC_FILE}"
 
-  apply_css
-  patch_branding
-  patch_pages
+  apply_flow_templates
+  apply_flow_collector_patch
+  configure_runtime_support
+  install_router_management_tool
   patch_graphs
   configure_alias
   reload_services
+  export_web_url
   check_cdn_link
 
   echo
   echo "Customizacao completa aplicada em ${WWW_DIR}"
-  echo "URL: /${WEB_ALIAS}/"
+  echo "URL: ${FLOW_WEB_URL}"
+  echo "Variavel exportada nesta execucao: FLOW_WEB_URL=${FLOW_WEB_URL}"
+  echo "Arquivo gerado: ${ENV_FILE}"
 }
 
 main "$@"

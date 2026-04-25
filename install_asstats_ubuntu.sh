@@ -5,8 +5,10 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="/data/asstats"
 REPO_URL="https://github.com/remontti/AS-Stats.git"
+COLLECTOR_PATCHER="${SCRIPT_DIR}/flow_patch_collector.py"
 LOG_DIR="/var/log/asstats-installer"
 LOG_FILE="${LOG_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
 
@@ -21,6 +23,8 @@ ASSTATS_ENABLE_UFW="${ASSTATS_ENABLE_UFW:-yes}"
 ASSTATS_EXPORTER_HOST="${ASSTATS_EXPORTER_HOST:-}"
 ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
 ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-128}"
+ASSTATS_FLOW_RETENTION_DAYS="${ASSTATS_FLOW_RETENTION_DAYS:-14}"
+ASSTATS_ACTION="${ASSTATS_ACTION:-}"
 RAW_WALK_FILE=""
 
 info() {
@@ -59,6 +63,45 @@ fail() {
 
 require_root() {
   [[ "${EUID}" -eq 0 ]] || fail "Execute como root: sudo ./install_asstats_ubuntu.sh"
+}
+
+prompt_action() {
+  if [[ -n "${ASSTATS_ACTION}" ]]; then
+    return
+  fi
+
+  printf "\n"
+  printf "Escolha a operacao desejada:\n"
+  printf "  1) Instalar ou atualizar o Flow Observatory completo\n"
+  printf "  2) Aplicar tema, corretivas e recursos flow em uma instalacao existente\n"
+  printf "  3) Adicionar mais um roteador/exportador no flow\n"
+  printf "\n"
+  read -r -p "Opcao [1/2/3]: " selected_action
+
+  case "${selected_action:-1}" in
+    1) ASSTATS_ACTION="install" ;;
+    2) ASSTATS_ACTION="theme" ;;
+    3) ASSTATS_ACTION="add-router" ;;
+    *)
+      fail "Opcao invalida. Use 1, 2 ou 3."
+      ;;
+  esac
+}
+
+run_theme_upgrade() {
+  local theme_script
+  theme_script="${SCRIPT_DIR}/apply_flow_full_customization.sh"
+  [[ -f "${theme_script}" ]] || fail "Script de customizacao nao encontrado: ${theme_script}"
+  [[ -d "${PROJECT_DIR}" ]] || fail "Projeto nao encontrado em ${PROJECT_DIR}"
+
+  info "Aplicando tema, corretivas do coletor e recursos flow em instalacao existente"
+  bash "${theme_script}" "${PROJECT_DIR}" "${ASSTATS_WEB_ALIAS}"
+}
+
+run_add_router() {
+  [[ -d "${PROJECT_DIR}" ]] || fail "Projeto nao encontrado em ${PROJECT_DIR}"
+  install_router_management_tool
+  /usr/local/bin/asstats-add-router.sh "${PROJECT_DIR}"
 }
 
 detect_ubuntu() {
@@ -303,6 +346,8 @@ install_project() {
     install -m 0644 "${PROJECT_DIR}/ip2asn/ip2as.pm" /usr/local/share/perl/5.*/ 2>/dev/null || true
     install -m 0644 "${PROJECT_DIR}/ip2asn/ip2as.pm" /usr/share/perl5/ip2as.pm 2>/dev/null || true
   fi
+
+  apply_flow_collector_patch
 }
 
 configure_snmp() {
@@ -509,8 +554,39 @@ EOF
   info "knownlinks gerado automaticamente com $(grep -cvE '^\s*#|^\s*$' "${PROJECT_DIR}/conf/knownlinks") interfaces"
 }
 
+apply_flow_collector_patch() {
+  [[ -f "${COLLECTOR_PATCHER}" ]] || fail "Patcher do coletor nao encontrado: ${COLLECTOR_PATCHER}"
+  [[ -f "${PROJECT_DIR}/bin/asstatd.pl" ]] || fail "Arquivo do coletor nao encontrado em ${PROJECT_DIR}/bin/asstatd.pl"
+
+  info "Aplicando extensao do coletor para base paralela por IP"
+  python3 "${COLLECTOR_PATCHER}" "${PROJECT_DIR}/bin/asstatd.pl"
+  chmod 0755 "${PROJECT_DIR}/bin/asstatd.pl"
+}
+
 customize_web_ui() {
   info "Aplicando tema futurista CECTI na WebUI"
+
+  local template_dir="${SCRIPT_DIR}/flow_webui"
+  if [[ -d "${template_dir}" ]] && [[ -f "${template_dir}/flow_ui.php" ]] && [[ -f "${template_dir}/custom.css" ]]; then
+    mkdir -p "${PROJECT_DIR}/www/css"
+    install -m 0644 "${template_dir}/custom.css" "${PROJECT_DIR}/www/css/custom.css"
+    install -m 0644 "${template_dir}/flow_ui.php" "${PROJECT_DIR}/www/flow_ui.php"
+    install -m 0644 "${template_dir}/index.php" "${PROJECT_DIR}/www/index.php"
+    install -m 0644 "${template_dir}/linkusage.php" "${PROJECT_DIR}/www/linkusage.php"
+    install -m 0644 "${template_dir}/history.php" "${PROJECT_DIR}/www/history.php"
+    install -m 0644 "${template_dir}/ipsearch.php" "${PROJECT_DIR}/www/ipsearch.php"
+    install -m 0644 "${template_dir}/asset.php" "${PROJECT_DIR}/www/asset.php"
+    install -m 0644 "${template_dir}/ix.php" "${PROJECT_DIR}/www/ix.php"
+
+    if [[ -f "${PROJECT_DIR}/www/gengraph.php" ]]; then
+      perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#f3fbff --color AXIS#bfd6e4 --color ARROW#7fe6ff --color FRAME#213d57 --color GRID#2f516b4c --color MGRID#39d5ff84 /g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g' "${PROJECT_DIR}/www/gengraph.php"
+    fi
+
+    if [[ -f "${PROJECT_DIR}/www/linkgraph.php" ]]; then
+      perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#f3fbff --color AXIS#bfd6e4 --color ARROW#7fe6ff --color FRAME#213d57 --color GRID#2f516b4c --color MGRID#39d5ff84 /g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g' "${PROJECT_DIR}/www/linkgraph.php"
+    fi
+    return
+  fi
 
   [[ -d "${PROJECT_DIR}/www/css" ]] || {
     warn "Diretorio de CSS da WebUI nao encontrado em ${PROJECT_DIR}/www/css"
@@ -892,11 +968,11 @@ EOF
   fi
 
   if [[ -f "${PROJECT_DIR}/www/gengraph.php" ]]; then
-    perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#07111f00 --color CANVAS#0b1623ee --color SHADEA#07111f00 --color SHADEB#07111f00 --color FONT#d8f7ff --color AXIS#8ecfff --color ARROW#8ecfff --color FRAME#244d73 --color GRID#36536d55 --color MGRID#4dd4ff77 /g; s/HRULE:0#00000080/HRULE:0#8ecfff88/g' "${PROJECT_DIR}/www/gengraph.php"
+    perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#f3fbff --color AXIS#bfd6e4 --color ARROW#7fe6ff --color FRAME#213d57 --color GRID#2f516b4c --color MGRID#39d5ff84 /g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g' "${PROJECT_DIR}/www/gengraph.php"
   fi
 
   if [[ -f "${PROJECT_DIR}/www/linkgraph.php" ]]; then
-    perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#07111f00 --color CANVAS#0b1623ee --color SHADEA#07111f00 --color SHADEB#07111f00 --color FONT#d8f7ff --color AXIS#8ecfff --color ARROW#8ecfff --color FRAME#244d73 --color GRID#36536d55 --color MGRID#4dd4ff77 /g; s/HRULE:0#00000080/HRULE:0#8ecfff88/g' "${PROJECT_DIR}/www/linkgraph.php"
+    perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#f3fbff --color AXIS#bfd6e4 --color ARROW#7fe6ff --color FRAME#213d57 --color GRID#2f516b4c --color MGRID#39d5ff84 /g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g' "${PROJECT_DIR}/www/linkgraph.php"
   fi
 }
 
@@ -934,6 +1010,8 @@ ASSTATS_PROJECT_DIR=${PROJECT_DIR}
 ASSTATS_EXPORTER_HOST=${ASSTATS_EXPORTER_HOST}
 ASSTATS_SNMP_COMMUNITY=${ASSTATS_SNMP_COMMUNITY}
 ASSTATS_SAMPLING_RATE=${ASSTATS_SAMPLING_RATE}
+ASSTATS_FLOW_DB=${PROJECT_DIR}/asstats/flow_events.db
+ASSTATS_FLOW_RETENTION_DAYS=${ASSTATS_FLOW_RETENTION_DAYS}
 EOF
 
   cat > /usr/local/bin/asstatsd-wrapper.sh <<'EOF'
@@ -951,7 +1029,9 @@ exec perl "${ASSTATS_PROJECT_DIR}/bin/asstatd.pl" \
   -k "${KNOWNLINKS}" \
   -p "${ASSTATS_PORT_NETFLOW}" \
   -P "${ASSTATS_PORT_SFLOW}" \
-  -a "${ASSTATS_MY_ASN}"
+  -a "${ASSTATS_MY_ASN}" \
+  -q "${ASSTATS_FLOW_DB}" \
+  -R "${ASSTATS_FLOW_RETENTION_DAYS}"
 EOF
   chmod +x /usr/local/bin/asstatsd-wrapper.sh
 
@@ -1012,6 +1092,159 @@ EOF
     warn "knownlinks sem interfaces validas. O servico asstatsd nao sera iniciado automaticamente."
   fi
   systemctl enable --now asstats-extract.timer
+}
+
+install_router_management_tool() {
+  info "Instalando utilitario para adicionar novos roteadores/exportadores"
+
+  cat > /usr/local/bin/asstats-add-router.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="${1:-/data/asstats}"
+KNOWNLINKS_FILE="${PROJECT_DIR}/conf/knownlinks"
+DEFAULTS_FILE="/etc/default/asstats"
+
+[[ -f "${KNOWNLINKS_FILE}" ]] || { echo "Arquivo knownlinks nao encontrado: ${KNOWNLINKS_FILE}" >&2; exit 1; }
+[[ -f "${DEFAULTS_FILE}" ]] && source "${DEFAULTS_FILE}"
+
+sampling_default="${ASSTATS_SAMPLING_RATE:-128}"
+
+read -r -p "IP ou hostname do novo exportador: " exporter_host
+[[ -n "${exporter_host}" ]] || { echo "Exportador nao informado" >&2; exit 1; }
+
+read -r -p "Comunidade SNMP [${ASSTATS_SNMP_COMMUNITY:-public}]: " snmp_community
+snmp_community="${snmp_community:-${ASSTATS_SNMP_COMMUNITY:-public}}"
+
+read -r -p "Sampling padrao [${sampling_default}]: " sampling_rate
+sampling_rate="${sampling_rate:-${sampling_default}}"
+
+tmp_walk="$(mktemp)"
+tmp_preview="$(mktemp)"
+trap 'rm -f "${tmp_walk}" "${tmp_preview}"' EXIT
+
+echo "[INFO] Executando descoberta SNMP em ${exporter_host}"
+snmpwalk -v2c -c "${snmp_community}" "${exporter_host}" > "${tmp_walk}"
+
+declare -A IF_INDEXES=()
+declare -A IF_DESCRS=()
+declare -A IF_ALIASES=()
+declare -A USED_TAGS=()
+
+while IFS=$'\t' read -r _ _ tag _; do
+  [[ -n "${tag:-}" ]] && USED_TAGS["${tag}"]=1
+done < <(awk -F '\t' '!/^[[:space:]]*#/ && NF >= 4 { print $1 "\t" $2 "\t" $3 "\t" $4 }' "${KNOWNLINKS_FILE}")
+
+while IFS= read -r line; do
+  [[ "${line}" =~ (IF-MIB::ifIndex|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.1)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+  index="${BASH_REMATCH[2]}"
+  IF_INDEXES["${index}"]="${index}"
+done < "${tmp_walk}"
+
+while IFS= read -r line; do
+  [[ "${line}" =~ (IF-MIB::ifDescr|\.1\.3\.6\.1\.2\.1\.2\.2\.1\.2)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+  index="${BASH_REMATCH[2]}"
+  value="${BASH_REMATCH[3]}"
+  value="${value#STRING: }"
+  value="${value#Hex-STRING: }"
+  value="${value#INTEGER: }"
+  value="${value#\"}"
+  value="${value%\"}"
+  IF_DESCRS["${index}"]="${value}"
+done < "${tmp_walk}"
+
+while IFS= read -r line; do
+  [[ "${line}" =~ (IF-MIB::ifAlias|IF-MIB::ifName|\.1\.3\.6\.1\.2\.1\.31\.1\.1\.1\.18|\.1\.3\.6\.1\.2\.1\.31\.1\.1\.1\.1)\.([0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+  index="${BASH_REMATCH[2]}"
+  value="${BASH_REMATCH[3]}"
+  value="${value#STRING: }"
+  value="${value#\"}"
+  value="${value%\"}"
+  IF_ALIASES["${index}"]="${value}"
+done < "${tmp_walk}"
+
+generate_tag() {
+  local ifindex="$1"
+  local candidate suffix
+  candidate="if${ifindex}"
+  if [[ -z "${USED_TAGS[${candidate}]:-}" ]]; then
+    USED_TAGS["${candidate}"]=1
+    printf '%s' "${candidate}"
+    return
+  fi
+
+  suffix=1
+  while :; do
+    candidate="if${ifindex}_${suffix}"
+    if [[ -z "${USED_TAGS[${candidate}]:-}" ]]; then
+      USED_TAGS["${candidate}"]=1
+      printf '%s' "${candidate}"
+      return
+    fi
+    suffix=$((suffix + 1))
+  done
+}
+
+cat > "${tmp_preview}" <<'PREVIEW'
+# novas interfaces para anexar
+PREVIEW
+
+color_palette=(1F78B4 33A02C E31A1C FF7F00 6A3D9A A6CEE3 B2DF8A FB9A99 CAB2D6 FDBF6F)
+color_index=0
+
+while IFS= read -r index; do
+  [[ -n "${IF_DESCRS[${index}]:-}" ]] || continue
+  description="${IF_ALIASES[${index}]:-${IF_DESCRS[${index}]}}"
+  tag="$(generate_tag "${index}")"
+  color="${color_palette[$((color_index % ${#color_palette[@]}))]}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${exporter_host}" \
+    "${index}" \
+    "${tag}" \
+    "${description}" \
+    "${color}" \
+    "${sampling_rate}" >> "${tmp_preview}"
+  color_index=$((color_index + 1))
+done < <(printf '%s\n' "${!IF_INDEXES[@]}" | sort -n)
+
+if ! grep -qvE '^\s*#|^\s*$' "${tmp_preview}"; then
+  echo "Nenhuma interface elegivel encontrada via SNMP para ${exporter_host}" >&2
+  exit 1
+fi
+
+echo
+echo "[INFO] Interfaces encontradas:"
+awk -F '\t' 'BEGIN { printf "%-16s %-8s %-14s %-42s %-8s %-8s\n", "EXPORTADOR", "IFINDEX", "TAG", "DESCRICAO", "COR", "SAMPLE" }
+  /^[[:space:]]*#/ { next }
+  NF >= 6 { printf "%-16s %-8s %-14s %-42s %-8s %-8s\n", $1, $2, $3, $4, $5, $6 }' "${tmp_preview}"
+echo
+
+read -r -p "Adicionar essas interfaces ao knownlinks? [Y/n]: " confirm
+confirm="${confirm:-Y}"
+case "${confirm}" in
+  Y|y|yes|YES) ;;
+  *)
+    echo "Operacao cancelada."
+    exit 0
+    ;;
+esac
+
+awk '!/^[[:space:]]*#/ && NF >= 6 { print }' "${tmp_preview}" >> "${KNOWNLINKS_FILE}"
+chmod 0644 "${KNOWNLINKS_FILE}"
+
+echo "[INFO] Reiniciando coletor e atualizando base web"
+systemctl restart asstatsd.service
+systemctl start asstats-extract.service || true
+
+echo
+echo "Roteador anexado com sucesso."
+echo "Arquivo atualizado: ${KNOWNLINKS_FILE}"
+echo "Valide com:"
+echo "  grep -n '${exporter_host}' ${KNOWNLINKS_FILE}"
+echo "  systemctl status asstatsd.service"
+EOF
+
+  chmod +x /usr/local/bin/asstats-add-router.sh
 }
 
 detect_flow_exporter_ip() {
@@ -1138,6 +1371,7 @@ Arquivos importantes:
   ${PROJECT_DIR}/conf/knownlinks
   ${PROJECT_DIR}/www/config.inc
   /etc/default/asstats
+  /usr/local/bin/asstats-add-router.sh
 
 Servicos:
   systemctl status asstatsd.service
@@ -1148,9 +1382,11 @@ Proximos passos:
 2. Revise o arquivo ${PROJECT_DIR}/conf/knownlinks e ajuste se necessario.
 3. Ajuste o ASN local em ${PROJECT_DIR}/www/config.inc se necessario.
 4. Configure o roteador para exportar NetFlow v8/v9 AS ou sFlow para este servidor.
-5. Rode manualmente:
+5. Se quiser adicionar outro roteador depois:
+   /usr/local/bin/asstats-add-router.sh ${PROJECT_DIR}
+6. Rode manualmente:
    perl ${PROJECT_DIR}/bin/rrd-extractstats.pl ${PROJECT_DIR}/rrd ${PROJECT_DIR}/conf/knownlinks ${PROJECT_DIR}/asstats/asstats_day.txt
-6. Acesse:
+7. Acesse:
    http://IP_DO_SERVIDOR/${ASSTATS_WEB_ALIAS}
 
 Comandos uteis:
@@ -1162,6 +1398,24 @@ EOF
 
 main() {
   require_root
+  prompt_action
+
+  case "${ASSTATS_ACTION}" in
+    theme)
+      run_theme_upgrade
+      return
+      ;;
+    add-router)
+      run_add_router
+      return
+      ;;
+    install)
+      ;;
+    *)
+      fail "Acao desconhecida: ${ASSTATS_ACTION}"
+      ;;
+  esac
+
   detect_ubuntu
   preflight
   configure_repos
@@ -1172,6 +1426,7 @@ main() {
   configure_web
   configure_knownlinks
   install_systemd_units
+  install_router_management_tool
   detect_flow_exporter_ip
   configure_firewall
   run_correctives
