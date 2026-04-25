@@ -72,7 +72,7 @@ function flow_knownlinks_entries() {
 function flow_validate_knownlink_fields($exporter, $ifindex, $tag, $description, $color, $sampling, $existingTag = '') {
     $exporter = trim((string)$exporter);
     $ifindex = trim((string)$ifindex);
-    $tag = strtoupper(trim((string)$tag));
+    $tag = trim((string)$tag);
     $description = preg_replace('/[\r\n\t]+/', ' ', trim((string)$description));
     $color = strtoupper(trim((string)$color));
     $sampling = trim((string)$sampling);
@@ -83,8 +83,8 @@ function flow_validate_knownlink_fields($exporter, $ifindex, $tag, $description,
     if ($ifindex === '' || !ctype_digit($ifindex)) {
         return array(false, 'O ifIndex precisa ser numerico.');
     }
-    if ($tag === '' || !preg_match('/^[A-Z0-9._-]+$/', $tag)) {
-        return array(false, 'A TAG deve usar apenas letras, numeros, ponto, underscore ou hifen.');
+    if ($tag === '' || !preg_match('/^[A-Za-z0-9._-]+$/', $tag)) {
+        return array(false, 'A TAG deve usar apenas letras, numeros, ponto, underscore ou hifen, preservando a grafia exata do RRD.');
     }
     if ($description === '') {
         return array(false, 'Informe a descricao do link.');
@@ -97,7 +97,7 @@ function flow_validate_knownlink_fields($exporter, $ifindex, $tag, $description,
     }
 
     foreach (flow_knownlinks_entries() as $entry) {
-        if ($entry['tag'] === $tag && $entry['tag'] !== strtoupper(trim((string)$existingTag))) {
+        if ($entry['tag'] === $tag && $entry['tag'] !== trim((string)$existingTag)) {
             return array(false, 'Ja existe uma TAG igual no knownlinks: ' . $tag);
         }
     }
@@ -367,7 +367,7 @@ $appendKnownlinkBody .= '<input class="flow-input" type="text" name="color" plac
 $appendKnownlinkBody .= '<input class="flow-input" type="text" name="sampling" value="128" placeholder="Sampling">';
 $appendKnownlinkBody .= '<button class="flow-button" type="submit">Adicionar ao knownlinks</button>';
 $appendKnownlinkBody .= '</div>';
-$appendKnownlinkBody .= '<span class="flow-search-hint">Esse formulario monta a linha com TAB automaticamente e evita duplicidade de TAG.</span>';
+$appendKnownlinkBody .= '<span class="flow-search-hint">Esse formulario monta a linha com TAB automaticamente e evita duplicidade de TAG. A TAG e sensivel a maiusculas/minusculas porque precisa bater com a serie do RRD.</span>';
 $appendKnownlinkBody .= '</form>';
 
 if (!empty($knownlinksEntries)) {
