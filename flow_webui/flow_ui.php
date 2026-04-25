@@ -290,16 +290,25 @@ function flow_render_graph_stats($stats) {
     }
 
     $html = '<div class="flow-graph-stats">';
-    foreach (array('in' => 'IN', 'out' => 'OUT') as $direction => $label) {
+    foreach (array('in' => array('label' => 'Entrada', 'badge' => 'IN', 'icon' => 'fa-arrow-down'), 'out' => array('label' => 'Saida', 'badge' => 'OUT', 'icon' => 'fa-arrow-up')) as $direction => $meta) {
         if (!isset($stats[$direction]) || $stats[$direction]['current'] === null) {
             continue;
         }
-        $html .= '<div class="flow-graph-stat-group">';
-        $html .= '<span class="flow-graph-stat-label">' . htmlspecialchars($label) . '</span>';
+        $html .= '<div class="flow-graph-stat-group flow-graph-stat-group-' . htmlspecialchars($direction) . '">';
+        $html .= '<div class="flow-graph-stat-head">';
+        $html .= '<span class="flow-graph-stat-badge"><i class="fa ' . htmlspecialchars($meta['icon']) . '"></i>' . htmlspecialchars($meta['badge']) . '</span>';
+        $html .= '<div class="flow-graph-stat-title">';
+        $html .= '<strong>' . htmlspecialchars($meta['label']) . '</strong>';
+        $html .= '<span>telemetria da janela atual</span>';
+        $html .= '</div>';
+        $html .= '<div class="flow-graph-stat-current">';
+        $html .= '<small>Atual</small>';
+        $html .= '<strong>' . htmlspecialchars(flow_format_bits($stats[$direction]['current'])) . '</strong>';
+        $html .= '</div>';
+        $html .= '</div>';
         $html .= '<div class="flow-graph-stat-metrics">';
-        $html .= '<span>Min ' . htmlspecialchars(flow_format_bits($stats[$direction]['min'])) . '</span>';
-        $html .= '<span>Max ' . htmlspecialchars(flow_format_bits($stats[$direction]['max'])) . '</span>';
-        $html .= '<span>Atual ' . htmlspecialchars(flow_format_bits($stats[$direction]['current'])) . '</span>';
+        $html .= '<div class="flow-graph-stat-kpi"><small>Minimo</small><strong>' . htmlspecialchars(flow_format_bits($stats[$direction]['min'])) . '</strong></div>';
+        $html .= '<div class="flow-graph-stat-kpi"><small>Pico</small><strong>' . htmlspecialchars(flow_format_bits($stats[$direction]['max'])) . '</strong></div>';
         $html .= '</div>';
         $html .= '</div>';
     }

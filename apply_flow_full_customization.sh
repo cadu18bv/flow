@@ -716,6 +716,98 @@ EOF
   chmod +x /usr/local/bin/asstats-add-router.sh
 }
 
+install_maintenance_helper() {
+  cat > /usr/local/bin/flow-maintenance-helper.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+source /etc/default/asstats 2>/dev/null || true
+
+PROJECT_DIR="${ASSTATS_PROJECT_DIR:-/data/asstats}"
+KNOWNLINKS_FILE="${PROJECT_DIR}/conf/knownlinks"
+RRD_DIR="${PROJECT_DIR}/rrd"
+ASSTATS_DB="${PROJECT_DIR}/asstats/asstats_day.txt"
+FLOW_DB="${PROJECT_DIR}/asstats/flow_events.db"
+
+action="${1:-}"
+
+case "${action}" in
+  refresh-collection)
+    systemctl restart asstatsd.service
+    systemctl start asstats-extract.service || true
+    echo "Coleta reiniciada e extrator acionado."
+    ;;
+  reset-collection)
+    systemctl stop asstatsd.service
+    systemctl stop asstats-extract.timer || true
+    systemctl stop asstats-extract.service || true
+    rm -rf "${RRD_DIR}"
+    rm -f "${ASSTATS_DB}" "${FLOW_DB}"
+    mkdir -p "${RRD_DIR}" "${PROJECT_DIR}/asstats"
+    touch "${ASSTATS_DB}"
+    chown -R root:root "${RRD_DIR}" "${PROJECT_DIR}/asstats" || true
+    chown root:www-data "${KNOWNLINKS_FILE}" "${ASSTATS_DB}" || true
+    chmod 0755 "${RRD_DIR}" "${PROJECT_DIR}/asstats" || true
+    chmod 0660 "${KNOWNLINKS_FILE}" || true
+    chmod 0664 "${ASSTATS_DB}" || true
+    systemctl start asstatsd.service
+    systemctl start asstats-extract.timer || true
+    systemctl start asstats-extract.service || true
+    echo "Coleta zerada e ambiente reiniciado."
+    ;;
+  tail-collector-log)
+    journalctl -u asstatsd.service -n 80 --no-pager
+    ;;
+  tail-extractor-log)
+    journalctl -u asstats-extract.service -n 80 --no-pager
+    ;;
+  tail-apache-log)
+    tail -n 80 /var/log/apache2/error.log
+    ;;
+  validate-flow)
+    netflow_port="${ASSTATS_PORT_NETFLOW:-9000}"
+    sflow_port="${ASSTATS_PORT_SFLOW:-6343}"
+    echo "== Diagnostico de chegada de flow =="
+    echo "Projeto: ${PROJECT_DIR}"
+    echo "Porta NetFlow/IPFIX: ${netflow_port}/udp"
+    echo "Porta sFlow: ${sflow_port}/udp"
+    echo
+    echo "== Servico do coletor =="
+    systemctl status asstatsd.service --no-pager || true
+    echo
+    echo "== Portas UDP em escuta =="
+    if command -v ss >/dev/null 2>&1; then
+      ss -lunp | grep -E "(:${netflow_port}\b|:${sflow_port}\b)" || echo "Nenhuma porta UDP encontrada em escuta para flow."
+    else
+      echo "Comando ss nao encontrado."
+    fi
+    echo
+    echo "== Ultimos logs do coletor =="
+    journalctl -u asstatsd.service -n 30 --no-pager || true
+    echo
+    echo "== Captura rapida de pacotes UDP =="
+    if command -v tcpdump >/dev/null 2>&1; then
+      timeout 12 tcpdump -ni any -c 8 "udp port ${netflow_port} or udp port ${sflow_port}" 2>/dev/null || echo "Nenhum pacote de flow capturado na janela de teste."
+    else
+      echo "tcpdump nao encontrado."
+    fi
+    ;;
+  *)
+    echo "Uso: $0 {refresh-collection|reset-collection|tail-collector-log|tail-extractor-log|tail-apache-log|validate-flow}" >&2
+    exit 1
+    ;;
+esac
+EOF
+
+  chmod 0750 /usr/local/bin/flow-maintenance-helper.sh
+  chown root:root /usr/local/bin/flow-maintenance-helper.sh
+
+  cat > /etc/sudoers.d/flow-maintenance-www-data <<'EOF'
+www-data ALL=(root) NOPASSWD: /usr/local/bin/flow-maintenance-helper.sh
+EOF
+  chmod 0440 /etc/sudoers.d/flow-maintenance-www-data
+}
+
 configure_admin_permissions() {
   [[ -f "${WWW_DIR}/config.inc" ]] && chown root:www-data "${WWW_DIR}/config.inc" && chmod 0660 "${WWW_DIR}/config.inc" || true
   [[ -f "${KNOWNLINKS_FILE}" ]] && chown root:www-data "${KNOWNLINKS_FILE}" && chmod 0660 "${KNOWNLINKS_FILE}" || true
@@ -771,6 +863,7 @@ main() {
   apply_flow_collector_patch
   configure_runtime_support
   install_router_management_tool
+  install_maintenance_helper
   patch_graphs
   configure_apache_hardening
   configure_admin_permissions

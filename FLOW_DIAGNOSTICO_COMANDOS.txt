@@ -1,0 +1,81 @@
+FLOW OBSERVATORY - COMANDOS DE DIAGNOSTICO
+=========================================
+
+1. STATUS DOS SERVICOS
+systemctl status asstatsd.service
+systemctl status asstats-extract.service
+systemctl status asstats-extract.timer
+systemctl status apache2
+
+2. LOGS PRINCIPAIS
+journalctl -u asstatsd.service -n 100 --no-pager
+journalctl -u asstats-extract.service -n 100 --no-pager
+tail -n 100 /var/log/apache2/error.log
+
+3. VALIDAR SE AS PORTAS DE FLOW ESTAO EM ESCUTA
+ss -lunp | grep -E ':(9000|6343)\b'
+
+4. CAPTURA RAPIDA PARA VER SE ESTA CHEGANDO FLOW
+timeout 15 tcpdump -ni any -c 10 'udp port 9000 or udp port 6343'
+
+5. VALIDAR ARQUIVO KNOWNLINKS
+cat -te /data/asstats/conf/knownlinks
+awk -F '\t' '{print NR, NF, $0}' /data/asstats/conf/knownlinks
+
+6. VALIDAR TAGS EXISTENTES DENTRO DOS RRD
+find /data/asstats/rrd -type f | head -n 20 | while read -r f; do rrdtool info "$f" | grep '^ds\[.*\]\.type'; done | sort -u
+
+7. VALIDAR SE O COLETOR ESTA GERANDO OU ALTERANDO RRD
+find /data/asstats/rrd -type f | head
+find /data/asstats/rrd -type f -mmin -10 | head
+
+8. VALIDAR A BASE WEB PRINCIPAL
+sqlite3 /data/asstats/asstats/asstats_day.txt '.tables'
+sqlite3 /data/asstats/asstats/asstats_day.txt 'select count(*) from stats;'
+
+9. VALIDAR A BASE DO IP LENS
+sqlite3 /data/asstats/asstats/flow_events.db '.tables'
+sqlite3 /data/asstats/asstats/flow_events.db 'select count(*) from flow_events;'
+sqlite3 /data/asstats/asstats/flow_events.db 'select datetime(max(minute_ts), "unixepoch", "localtime"), count(*) from flow_events;'
+
+10. REINICIAR A COLETA E FORCAR A ATUALIZACAO
+systemctl restart asstatsd.service
+systemctl start asstats-extract.service
+
+11. VALIDACAO COMPLETA EM SEQUENCIA
+systemctl restart asstatsd.service
+sleep 5
+journalctl -u asstatsd.service -n 50 --no-pager
+systemctl start asstats-extract.service
+sleep 3
+journalctl -u asstats-extract.service -n 50 --no-pager
+sqlite3 /data/asstats/asstats/flow_events.db 'select count(*) from flow_events;'
+sqlite3 /data/asstats/asstats/asstats_day.txt 'select count(*) from stats;'
+
+12. SE O COLETOR RECLAMAR DE UNKNOWN DS NAME
+rrdtool info /caminho/do/arquivo.rrd | grep '^ds\[.*\]\.type'
+
+13. DIAGNOSTICO RAPIDO DE CHEGADA DE FLOW PELO HELPER
+/usr/local/bin/flow-maintenance-helper.sh validate-flow
+
+14. VALIDAR TIMEZONE DO SERVIDOR E DO PHP
+timedatectl
+php -i | grep 'date.timezone'
+cat /etc/timezone
+
+15. VALIDAR CONFIGURACAO CRITICA
+cat /etc/default/asstats
+grep -n '\$my_asn' /data/asstats/www/config.inc
+
+16. CASO O KNOWNLINKS TENHA SIDO ALTERADO E A COLETA PARE
+systemctl stop asstatsd.service
+cp /data/asstats/conf/knownlinks /data/asstats/conf/knownlinks.bak.$(date +%F-%H%M%S)
+nano /data/asstats/conf/knownlinks
+systemctl start asstatsd.service
+journalctl -u asstatsd.service -n 50 --no-pager
+
+17. OBSERVACOES IMPORTANTES
+- O arquivo knownlinks deve usar TAB entre as colunas.
+- A TAG do knownlinks precisa bater exatamente com a DS historica do RRD.
+- Mudar a descricao do link e seguro.
+- Mudar a TAG pode quebrar o historico antigo.

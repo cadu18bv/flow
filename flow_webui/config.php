@@ -40,6 +40,95 @@ function flow_write_knownlinks_text($text) {
     file_put_contents(flow_knownlinks_path(), rtrim((string)$text) . PHP_EOL);
 }
 
+function flow_knownlinks_backup_dir() {
+    return flow_runtime_dir() . DIRECTORY_SEPARATOR . 'knownlinks-history';
+}
+
+function flow_ensure_knownlinks_backup_dir() {
+    $dir = flow_knownlinks_backup_dir();
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0770, true);
+    }
+    return $dir;
+}
+
+function flow_backup_knownlinks_snapshot($reason = 'manual') {
+    $source = flow_knownlinks_path();
+    if (!is_file($source)) {
+        return null;
+    }
+
+    $dir = flow_ensure_knownlinks_backup_dir();
+    $reason = preg_replace('/[^a-zA-Z0-9._-]/', '-', (string)$reason);
+    $reason = trim((string)$reason, '-');
+    if ($reason === '') {
+        $reason = 'manual';
+    }
+
+    $filename = 'knownlinks-' . date('Ymd-His') . '-' . $reason . '.bak';
+    $target = $dir . DIRECTORY_SEPARATOR . $filename;
+
+    if (@copy($source, $target)) {
+        return $target;
+    }
+
+    return null;
+}
+
+function flow_list_knownlinks_backups() {
+    $dir = flow_knownlinks_backup_dir();
+    if (!is_dir($dir)) {
+        return array();
+    }
+
+    $items = glob($dir . DIRECTORY_SEPARATOR . 'knownlinks-*.bak');
+    if (!is_array($items)) {
+        return array();
+    }
+
+    rsort($items, SORT_NATURAL);
+    return $items;
+}
+
+function flow_restore_knownlinks_backup($basename) {
+    $basename = basename((string)$basename);
+    $source = flow_knownlinks_backup_dir() . DIRECTORY_SEPARATOR . $basename;
+    if (!is_file($source)) {
+        return array(false, 'Backup nao encontrado.');
+    }
+
+    $content = (string)file_get_contents($source);
+    list($ok, $message) = flow_validate_knownlinks_text($content);
+    if (!$ok) {
+        return array(false, 'O backup selecionado esta invalido: ' . $message);
+    }
+
+    flow_backup_knownlinks_snapshot('pre-rollback');
+    flow_write_knownlinks_text($content);
+    return array(true, $basename);
+}
+
+function flow_maintenance_helper_path() {
+    return '/usr/local/bin/flow-maintenance-helper.sh';
+}
+
+function flow_run_maintenance_action($action) {
+    $helper = flow_maintenance_helper_path();
+    if (!is_file($helper)) {
+        return array(false, "Helper de manutencao nao encontrado em {$helper}");
+    }
+
+    $allowed = array('refresh-collection', 'reset-collection', 'tail-collector-log', 'tail-extractor-log', 'tail-apache-log', 'validate-flow');
+    if (!in_array($action, $allowed, true)) {
+        return array(false, 'Acao de manutencao invalida.');
+    }
+
+    $command = 'sudo ' . escapeshellarg($helper) . ' ' . escapeshellarg($action) . ' 2>&1';
+    $output = shell_exec($command);
+
+    return array(true, trim((string)$output));
+}
+
 function flow_knownlinks_entries() {
     $entries = array();
     $lines = preg_split('/\r\n|\r|\n/', flow_read_knownlinks_text());
@@ -156,6 +245,29 @@ function flow_render_audit_table($rows) {
     return $html;
 }
 
+function flow_render_knownlinks_backups($items) {
+    if (empty($items)) {
+        return flow_render_empty_state('Sem versoes salvas', 'Os snapshots do knownlinks passarao a aparecer aqui sempre que houver alteracao pelo painel.');
+    }
+
+    $html = '<div class="flow-table-wrap"><table class="flow-table"><thead><tr><th>Arquivo</th><th>Atualizado</th><th>Acoes</th></tr></thead><tbody>';
+    foreach ($items as $path) {
+        $basename = basename($path);
+        $html .= '<tr>';
+        $html .= '<td>' . htmlspecialchars($basename) . '</td>';
+        $html .= '<td>' . htmlspecialchars(date('Y-m-d H:i:s', (int)filemtime($path))) . '</td>';
+        $html .= '<td><form method="post" class="flow-inline-form">';
+        $html .= '<input type="hidden" name="action" value="rollback_knownlinks">';
+        $html .= '<input type="hidden" name="backup_name" value="' . htmlspecialchars($basename) . '">';
+        $html .= '<button class="flow-button flow-button-ghost" type="submit">Restaurar</button>';
+        $html .= '</form></td>';
+        $html .= '</tr>';
+    }
+    $html .= '</tbody></table></div>';
+
+    return $html;
+}
+
 function flow_config_handle_post() {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         return;
@@ -183,7 +295,9 @@ function flow_config_handle_post() {
             if (!$ok) {
                 flow_auth_set_flash($message, 'error');
             } else {
+                flow_backup_knownlinks_snapshot('save');
                 flow_write_knownlinks_text($knownlinks);
+                flow_run_maintenance_action('refresh-collection');
                 flow_auth_audit('config.knownlinks.updated', 'Arquivo knownlinks salvo pelo painel', 'knownlinks');
                 flow_auth_set_flash('Arquivo knownlinks atualizado. Reinicie o coletor para aplicar.', 'success');
             }
@@ -213,9 +327,57 @@ function flow_config_handle_post() {
             ));
             $current = rtrim(flow_read_knownlinks_text());
             $next = $current === '' ? $line : ($current . PHP_EOL . $line);
+            flow_backup_knownlinks_snapshot('append');
             flow_write_knownlinks_text($next);
+            flow_run_maintenance_action('refresh-collection');
             flow_auth_audit('config.knownlinks.appended', 'Novo link anexado ao knownlinks', $payload['tag']);
             flow_auth_set_flash('Novo link adicionado com sucesso ao knownlinks.', 'success');
+            break;
+
+        case 'rollback_knownlinks':
+            $backupName = (string)($_POST['backup_name'] ?? '');
+            list($ok, $payload) = flow_restore_knownlinks_backup($backupName);
+            if (!$ok) {
+                flow_auth_set_flash($payload, 'error');
+            } else {
+                flow_run_maintenance_action('refresh-collection');
+                flow_auth_audit('config.knownlinks.rollback', 'Rollback de versionamento executado', $payload);
+                flow_auth_set_flash('Rollback aplicado com sucesso a partir de ' . $payload . '.', 'success');
+            }
+            break;
+
+        case 'refresh_collection':
+            list($ok, $payload) = flow_run_maintenance_action('refresh-collection');
+            if (!$ok) {
+                flow_auth_set_flash($payload, 'error');
+            } else {
+                flow_auth_audit('maintenance.refresh_collection', 'Coleta reiniciada pelo painel');
+                flow_auth_set_flash('Coleta reiniciada e extrator acionado.', 'success');
+            }
+            break;
+
+        case 'reset_collection':
+            if (!flow_auth_has_role(array('master'))) {
+                flow_auth_set_flash('Somente master pode zerar a coleta.', 'error');
+                break;
+            }
+            list($ok, $payload) = flow_run_maintenance_action('reset-collection');
+            if (!$ok) {
+                flow_auth_set_flash($payload, 'error');
+            } else {
+                flow_auth_audit('maintenance.reset_collection', 'Reset total da coleta executado pelo painel');
+                flow_auth_set_flash('Coleta zerada com sucesso. O ambiente iniciou uma base nova.', 'success');
+            }
+            break;
+
+        case 'validate_flow':
+            list($ok, $payload) = flow_run_maintenance_action('validate-flow');
+            if (!$ok) {
+                flow_auth_set_flash($payload, 'error');
+            } else {
+                flow_auth_audit('maintenance.validate_flow', 'Validacao de chegada de flow executada pelo painel');
+                flow_auth_set_flash('Validacao de flow executada. Veja a secao de logs operacionais para o resultado.', 'success');
+            }
             break;
 
         case 'create_user':
@@ -326,8 +488,21 @@ $flashHtml = flow_render_flash_message();
 $localAsn = flow_read_local_asn();
 $knownlinksText = flow_read_knownlinks_text();
 $knownlinksEntries = flow_knownlinks_entries();
+$knownlinksBackups = array_slice(flow_list_knownlinks_backups(), 0, 20);
 $users = flow_auth_all_users();
 $auditRows = flow_auth_recent_audit_logs(40);
+$selectedLog = isset($_GET['log']) ? trim((string)$_GET['log']) : 'collector';
+$logActions = array(
+    'collector' => 'tail-collector-log',
+    'extractor' => 'tail-extractor-log',
+    'apache' => 'tail-apache-log',
+    'flowcheck' => 'validate-flow',
+);
+$logOutput = '';
+if (isset($logActions[$selectedLog])) {
+    list($logOk, $logPayload) = flow_run_maintenance_action($logActions[$selectedLog]);
+    $logOutput = $logPayload;
+}
 $heroStats = array(
     array('label' => 'Perfil', 'value' => strtoupper(flow_auth_current_user()['role'])),
     array('label' => 'Usuarios', 'value' => count($users)),
@@ -433,6 +608,37 @@ $usersBody .= '</form>';
 $usersBody .= '</div>';
 
 $auditBody = flow_render_audit_table($auditRows);
+$backupBody = flow_render_knownlinks_backups($knownlinksBackups);
+
+$maintenanceBody = '<div class="flow-form-stack">';
+$maintenanceBody .= '<form method="post" class="flow-inline-form">';
+$maintenanceBody .= '<input type="hidden" name="action" value="refresh_collection">';
+$maintenanceBody .= '<button class="flow-button" type="submit">Reiniciar coleta</button>';
+$maintenanceBody .= '<span class="flow-search-hint">Reinicia o coletor e aciona o extrator.</span>';
+$maintenanceBody .= '</form>';
+$maintenanceBody .= '<form method="post" class="flow-inline-form">';
+$maintenanceBody .= '<input type="hidden" name="action" value="validate_flow">';
+$maintenanceBody .= '<button class="flow-button flow-button-ghost" type="submit">Validar chegada de flow</button>';
+$maintenanceBody .= '<span class="flow-search-hint">Executa checagem de portas, servico e captura rapida de pacotes UDP.</span>';
+$maintenanceBody .= '</form>';
+if (flow_auth_has_role(array('master'))) {
+    $maintenanceBody .= '<form method="post" class="flow-inline-form">';
+    $maintenanceBody .= '<input type="hidden" name="action" value="reset_collection">';
+    $maintenanceBody .= '<button class="flow-button flow-button-danger" type="submit" onclick="return confirm(\'Isso vai apagar o historico atual. Deseja continuar?\');">Zerar coleta</button>';
+    $maintenanceBody .= '<span class="flow-search-hint">Apaga RRD, asstats_day e flow_events para iniciar uma base nova.</span>';
+    $maintenanceBody .= '</form>';
+}
+$maintenanceBody .= '</div>';
+
+$logBody = '<div class="flow-form-stack">';
+$logBody .= '<div class="flow-inline-form">';
+$logBody .= '<a class="flow-button flow-button-ghost" href="config.php?log=collector">Log do coletor</a>';
+$logBody .= '<a class="flow-button flow-button-ghost" href="config.php?log=extractor">Log do extrator</a>';
+$logBody .= '<a class="flow-button flow-button-ghost" href="config.php?log=apache">Log do Apache</a>';
+$logBody .= '<a class="flow-button flow-button-ghost" href="config.php?log=flowcheck">Diagnostico de flow</a>';
+$logBody .= '</div>';
+$logBody .= '<pre class="flow-log-console">' . htmlspecialchars($logOutput !== '' ? $logOutput : 'Nenhum log disponivel no momento.') . '</pre>';
+$logBody .= '</div>';
 
 flow_render_shell_start('Flow | Config', 'config');
 echo flow_render_hero('config center', 'Administracao do Flow', 'Gerencie autenticacao, configuracoes locais e o arquivo knownlinks da plataforma.', $heroStats);
@@ -443,6 +649,9 @@ echo flow_render_panel('Controle de acesso', $usersBody, 'fa-lock');
 echo flow_render_panel('Trilha de auditoria', $auditBody, 'fa-shield');
 echo '</div>';
 echo '<div class="flow-stack">';
+echo flow_render_panel('Manutencao controlada', $maintenanceBody, 'fa-wrench');
+echo flow_render_panel('Logs operacionais', $logBody, 'fa-file-text-o');
+echo flow_render_panel('Rollback de knownlinks', $backupBody, 'fa-history');
 echo flow_render_panel('Adicionar roteador / link', $appendKnownlinkBody, 'fa-plus-circle');
 echo flow_render_panel('Editor de knownlinks', $knownlinksBody, 'fa-code');
 echo '</div>';
