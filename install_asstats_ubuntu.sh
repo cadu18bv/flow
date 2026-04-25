@@ -584,11 +584,11 @@ customize_web_ui() {
     install -m 0644 "${template_dir}/ix.php" "${PROJECT_DIR}/www/ix.php"
 
     if [[ -f "${PROJECT_DIR}/www/gengraph.php" ]]; then
-      perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#f3fbff --color AXIS#bfd6e4 --color ARROW#7fe6ff --color FRAME#213d57 --color GRID#2f516b4c --color MGRID#39d5ff84 /g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g' "${PROJECT_DIR}/www/gengraph.php"
+      perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#ffffff --color AXIS#e2f3ff --color ARROW#d7f6ff --color FRAME#2c5375 --color GRID#456a8558 --color MGRID#6ae3ff8e /g; s/HRULE:0#00000080/HRULE:0#c9f5ff88/g' "${PROJECT_DIR}/www/gengraph.php"
     fi
 
     if [[ -f "${PROJECT_DIR}/www/linkgraph.php" ]]; then
-      perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#f3fbff --color AXIS#bfd6e4 --color ARROW#7fe6ff --color FRAME#213d57 --color GRID#2f516b4c --color MGRID#39d5ff84 /g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g' "${PROJECT_DIR}/www/linkgraph.php"
+      perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#ffffff --color AXIS#e2f3ff --color ARROW#d7f6ff --color FRAME#2c5375 --color GRID#456a8558 --color MGRID#6ae3ff8e /g; s/HRULE:0#00000080/HRULE:0#c9f5ff88/g' "${PROJECT_DIR}/www/linkgraph.php"
     fi
     return
   fi
@@ -973,11 +973,11 @@ EOF
   fi
 
   if [[ -f "${PROJECT_DIR}/www/gengraph.php" ]]; then
-    perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#f3fbff --color AXIS#bfd6e4 --color ARROW#7fe6ff --color FRAME#213d57 --color GRID#2f516b4c --color MGRID#39d5ff84 /g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g' "${PROJECT_DIR}/www/gengraph.php"
+    perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#ffffff --color AXIS#e2f3ff --color ARROW#d7f6ff --color FRAME#2c5375 --color GRID#456a8558 --color MGRID#6ae3ff8e /g; s/HRULE:0#00000080/HRULE:0#c9f5ff88/g' "${PROJECT_DIR}/www/gengraph.php"
   fi
 
   if [[ -f "${PROJECT_DIR}/www/linkgraph.php" ]]; then
-    perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#f3fbff --color AXIS#bfd6e4 --color ARROW#7fe6ff --color FRAME#213d57 --color GRID#2f516b4c --color MGRID#39d5ff84 /g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g' "${PROJECT_DIR}/www/linkgraph.php"
+    perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#ffffff --color AXIS#e2f3ff --color ARROW#d7f6ff --color FRAME#2c5375 --color GRID#456a8558 --color MGRID#6ae3ff8e /g; s/HRULE:0#00000080/HRULE:0#c9f5ff88/g' "${PROJECT_DIR}/www/linkgraph.php"
   fi
 }
 

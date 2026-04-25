@@ -255,9 +255,9 @@ function flow_render_dual_graph($title, $graph4, $graph6 = '') {
 }
 
 function flow_render_link_card($title, $graph4, $graph6 = '') {
-    $html = '<article class="flow-link-card flow-link-card-observe">';
+    $html = '<article class="flow-link-card">';
     $html .= '<header><span>' . htmlspecialchars($title) . '</span></header>';
-    $html .= '<div class="flow-graph-pair flow-graph-pair-stack">';
+    $html .= '<div class="flow-graph-pair">';
     $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div>' . $graph4 . '</div>';
     if ($graph6 !== '') {
         $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div>' . $graph6 . '</div>';

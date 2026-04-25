@@ -6,8 +6,6 @@ $selected_links = array();
 $knownlinks = getknownlinks();
 $hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 24;
 $label = statsLabelForHours($hours);
-$linkGraphWidth = 980;
-$linkGraphHeight = 340;
 
 $heroStats = array(
     array('label' => 'Janela', 'value' => $label),
@@ -20,8 +18,8 @@ echo flow_render_hero('link flow matrix', 'Fluxo por link', 'Visão operacional 
 
 $cards = '';
 foreach ($knownlinks as $link) {
-    $graph4 = '<img alt="Fluxo IPv4" src="linkgraph.php?link=' . urlencode($link['tag']) . '&numhours=' . $hours . '&width=' . $linkGraphWidth . '&height=' . $linkGraphHeight . '&dname=' . rawurlencode($link['descr'] . ' - IPv4') . '&v=4" />';
-    $graph6 = $showv6 ? '<img alt="Fluxo IPv6" src="linkgraph.php?link=' . urlencode($link['tag']) . '&numhours=' . $hours . '&width=' . $linkGraphWidth . '&height=' . $linkGraphHeight . '&dname=' . rawurlencode($link['descr'] . ' - IPv6') . '&v=6" />' : '';
+    $graph4 = '<img alt="Fluxo IPv4" src="linkgraph.php?link=' . urlencode($link['tag']) . '&numhours=' . $hours . '&width=' . $default_graph_width . '&height=' . $default_graph_height . '&dname=' . rawurlencode($link['descr'] . ' - IPv4') . '&v=4" />';
+    $graph6 = $showv6 ? '<img alt="Fluxo IPv6" src="linkgraph.php?link=' . urlencode($link['tag']) . '&numhours=' . $hours . '&width=' . $default_graph_width . '&height=' . $default_graph_height . '&dname=' . rawurlencode($link['descr'] . ' - IPv6') . '&v=6" />' : '';
     $cards .= flow_render_link_card($link['descr'], $graph4, $graph6);
 }
 

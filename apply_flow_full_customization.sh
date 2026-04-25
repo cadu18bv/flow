@@ -411,14 +411,14 @@ patch_pages() {
 
 patch_graphs() {
   local replacement
-  replacement='--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#f3fbff --color AXIS#bfd6e4 --color ARROW#7fe6ff --color FRAME#213d57 --color GRID#2f516b4c --color MGRID#39d5ff84 '
+  replacement='--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#ffffff --color AXIS#e2f3ff --color ARROW#d7f6ff --color FRAME#2c5375 --color GRID#456a8558 --color MGRID#6ae3ff8e '
 
   if [[ -f "${WWW_DIR}/gengraph.php" ]]; then
-    perl -0pi -e "s/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /${replacement}/g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g" "${WWW_DIR}/gengraph.php"
+    perl -0pi -e "s/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /${replacement}/g; s/HRULE:0#00000080/HRULE:0#c9f5ff88/g" "${WWW_DIR}/gengraph.php"
   fi
 
   if [[ -f "${WWW_DIR}/linkgraph.php" ]]; then
-    perl -0pi -e "s/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /${replacement}/g; s/HRULE:0#00000080/HRULE:0#7fe6ff66/g" "${WWW_DIR}/linkgraph.php"
+    perl -0pi -e "s/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /${replacement}/g; s/HRULE:0#00000080/HRULE:0#c9f5ff88/g" "${WWW_DIR}/linkgraph.php"
   fi
 }
 

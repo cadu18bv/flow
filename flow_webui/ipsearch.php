@@ -30,6 +30,26 @@ function flow_render_select($name, $value, $options) {
     return $html;
 }
 
+function flow_render_mode_switch($current) {
+    $options = array(
+        'any' => 'Qualquer lado',
+        'src' => 'Origem',
+        'dst' => 'Destino',
+    );
+
+    $html = '<div class="flow-mode-switch" role="radiogroup" aria-label="Modo da consulta">';
+    foreach ($options as $value => $label) {
+        $checked = ($current === $value) ? ' checked' : '';
+        $active = ($current === $value) ? ' is-active' : '';
+        $html .= '<label class="flow-mode-chip' . $active . '">';
+        $html .= '<input type="radio" name="mode" value="' . htmlspecialchars($value) . '"' . $checked . '>';
+        $html .= '<span>' . htmlspecialchars($label) . '</span>';
+        $html .= '</label>';
+    }
+    $html .= '</div>';
+    return $html;
+}
+
 function flow_render_query_chart($points) {
     if (empty($points)) {
         return flow_render_empty_state('Sem pontos de telemetria', 'Nenhuma amostra agregada por minuto foi encontrada para o filtro atual.');
@@ -298,9 +318,9 @@ echo flow_render_hero(
 
 $form = '<form method="get" action="ipsearch.php" class="flow-form-stack flow-search-form">'
     . '<label>IP de origem ou destino</label>'
+    . flow_render_mode_switch($queryMode)
     . '<div class="flow-inline-form flow-search-row">'
     . '<input class="flow-input flow-input-xl flow-search-ip" type="text" name="ip" value="' . htmlspecialchars($queryIp) . '" placeholder="Ex.: 8.8.8.8 ou 2800:3f0:4001:..." />'
-    . str_replace('class="flow-input"', 'class="flow-input flow-search-select"', flow_render_select('mode', $queryMode, array('any' => 'Qualquer lado', 'src' => 'Somente origem', 'dst' => 'Somente destino')))
     . str_replace('class="flow-input"', 'class="flow-input flow-search-hours"', flow_render_select('hours', $queryHours, flow_query_hours_options()))
     . '<button class="flow-button flow-button-xl flow-search-submit" type="submit">Investigar</button>'
     . '</div>'
