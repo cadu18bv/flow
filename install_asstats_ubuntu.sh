@@ -843,6 +843,8 @@ customize_web_ui() {
     install -m 0644 "${template_dir}/config.php" "${PROJECT_DIR}/www/config.php"
     install -m 0644 "${template_dir}/login.php" "${PROJECT_DIR}/www/login.php"
     install -m 0644 "${template_dir}/logout.php" "${PROJECT_DIR}/www/logout.php"
+    install -m 0644 "${template_dir}/favicon.svg" "${PROJECT_DIR}/www/favicon.svg"
+    install -m 0644 "${template_dir}/site.webmanifest" "${PROJECT_DIR}/www/site.webmanifest"
 
     if [[ -f "${PROJECT_DIR}/www/gengraph.php" ]]; then
       perl -0pi -e 's/--color BACK#ffffff00 --color SHADEA#ffffff00 --color SHADEB#ffffff00 /--color BACK#05101a00 --color CANVAS#08131ecc --color SHADEA#05101a00 --color SHADEB#05101a00 --color FONT#ffffff --color AXIS#e2f3ff --color ARROW#d7f6ff --color FRAME#2c5375 --color GRID#456a8558 --color MGRID#6ae3ff8e /g; s/HRULE:0#00000080/HRULE:0#c9f5ff88/g' "${PROJECT_DIR}/www/gengraph.php"

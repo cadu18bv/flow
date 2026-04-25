@@ -1,0 +1,17 @@
+{
+  "name": "CECTI Flow Observatory",
+  "short_name": "Flow",
+  "description": "Plataforma de observabilidade e inteligencia de trafego da CECTI.",
+  "start_url": "/flow/login.php",
+  "display": "standalone",
+  "background_color": "#07111f",
+  "theme_color": "#07111f",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

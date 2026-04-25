@@ -34,7 +34,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <meta charset="UTF-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="application-name" content="CECTI Flow Observatory">
+  <meta name="description" content="Acesso administrativo da plataforma CECTI Flow Observatory.">
+  <meta name="theme-color" content="#07111f">
   <title>Flow | Login</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="shortcut icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="site.webmanifest">
   <link rel="stylesheet" href="bootstrap/css/bootstrap.min.css">
   <link rel="stylesheet" href="plugins/font-awesome/font-awesome.min.css">
   <link rel="stylesheet" href="css/custom.css">

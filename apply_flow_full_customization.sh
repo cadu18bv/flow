@@ -441,6 +441,8 @@ apply_flow_templates() {
   install -m 0644 "${TEMPLATE_DIR}/config.php" "${WWW_DIR}/config.php"
   install -m 0644 "${TEMPLATE_DIR}/login.php" "${WWW_DIR}/login.php"
   install -m 0644 "${TEMPLATE_DIR}/logout.php" "${WWW_DIR}/logout.php"
+  install -m 0644 "${TEMPLATE_DIR}/favicon.svg" "${WWW_DIR}/favicon.svg"
+  install -m 0644 "${TEMPLATE_DIR}/site.webmanifest" "${WWW_DIR}/site.webmanifest"
 }
 
 apply_flow_collector_patch() {

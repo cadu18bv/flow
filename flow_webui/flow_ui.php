@@ -46,8 +46,15 @@ function flow_render_shell_start($title, $active = 'overview') {
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta http-equiv="Refresh" content="300">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="application-name" content="CECTI Flow Observatory">
+  <meta name="description" content="Plataforma de observabilidade, inteligencia de trafego e analise operacional da CECTI.">
+  <meta name="theme-color" content="#07111f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>{$title}</title>
-  <link rel="icon" href="favicon.ico" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="shortcut icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="site.webmanifest">
   <link rel="stylesheet" href="bootstrap/css/bootstrap.min.css">
   <link rel="stylesheet" href="plugins/font-awesome/font-awesome.min.css">
   <link rel="stylesheet" href="plugins/ionicons/ionicons.min.css">
