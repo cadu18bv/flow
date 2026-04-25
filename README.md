@@ -20,8 +20,10 @@ O script [`install_asstats_ubuntu.sh`](C:\Users\Rocha\Documents\Codex\2026-04-24
 - cria `rrd/`, `asstats/` e o `knownlinks`
 - pergunta qual host exporta flow
 - pergunta os dados do `SNMP`
-- consulta automaticamente as interfaces ativas via `snmpwalk`
+- consulta o `snmpwalk` bruto e trata localmente `IF-MIB::ifIndex` e `IF-MIB::ifDescr`
 - preenche o `knownlinks` automaticamente
+- grava o `knownlinks` com `TAB` real entre as colunas
+- tenta detectar o IP real de origem do flow com `tcpdump` e corrige o `knownlinks` se esse IP for diferente do host SNMP
 - configura um alias web em `/var/www/html/as-stats`
 - cria `systemd service` para `asstatd.pl`
 - cria `systemd timer` para `rrd-extractstats.pl`
@@ -41,6 +43,7 @@ Você pode sobrescrever antes de executar:
 sudo ASSTATS_PORT_NETFLOW=9000 \
      ASSTATS_PORT_SFLOW=6343 \
      ASSTATS_MY_ASN=1234 \
+     ASSTATS_SAMPLING_RATE=128 \
      ASSTATS_WEB_ALIAS=as-stats \
      ./install_asstats_ubuntu.sh
 ```
@@ -58,11 +61,11 @@ O instalador deixa a base pronta, mas estes pontos continuam dependendo do seu a
 
 O script agora gera o arquivo automaticamente via `SNMP`, usando:
 
+- `ifIndex`
 - `ifDescr`
-- `ifAlias`, quando existir
-- `ifOperStatus`
+- `ifAlias` ou `ifName`, quando existir
 
-Ele inclui apenas interfaces ativas no momento da coleta.
+Depois que o coletor sobe, o instalador ainda tenta capturar o primeiro pacote UDP de flow para descobrir o IP real de origem do exportador. Se esse IP for diferente do host consultado via SNMP, ele regrava a primeira coluna do `knownlinks` automaticamente.
 
 Mesmo assim, vale revisar:
 
@@ -85,7 +88,9 @@ Exemplo:
 Importante:
 
 - use `TAB`, não espaços
-- o `TAG` deve ser curto
+- o `TAG` precisa ser compatível com a WebUI; o instalador agora gera nomes seguros como `if49`, `if64`, `if67`
+- o primeiro campo precisa bater com o IP de origem que chega no coletor
+- a 6ª coluna precisa bater com o sampling configurado no roteador; o padrão do instalador agora é `128`
 
 ### 2. ASN local
 
@@ -107,9 +112,9 @@ O servidor sozinho não gera gráfico. O roteador precisa enviar:
 Se quiser conferir ou refazer:
 
 ```bash
-snmpwalk -v2c -c SUA_COMMUNITY IP_DO_ROUTER IF-MIB::ifDescr
 snmpwalk -v2c -c SUA_COMMUNITY IP_DO_ROUTER IF-MIB::ifIndex
-snmpwalk -v2c -c SUA_COMMUNITY IP_DO_ROUTER IF-MIB::ifOperStatus
+snmpwalk -v2c -c SUA_COMMUNITY IP_DO_ROUTER IF-MIB::ifDescr
+tcpdump -ni any udp port 9000 -c 5
 ```
 
 ## Serviços

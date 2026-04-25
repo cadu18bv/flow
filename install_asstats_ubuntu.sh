@@ -20,7 +20,7 @@ ASSTATS_WEB_ALIAS="${ASSTATS_WEB_ALIAS:-as-stats}"
 ASSTATS_ENABLE_UFW="${ASSTATS_ENABLE_UFW:-yes}"
 ASSTATS_EXPORTER_HOST="${ASSTATS_EXPORTER_HOST:-}"
 ASSTATS_SNMP_COMMUNITY="${ASSTATS_SNMP_COMMUNITY:-public}"
-ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-1}"
+ASSTATS_SAMPLING_RATE="${ASSTATS_SAMPLING_RATE:-128}"
 RAW_WALK_FILE=""
 
 info() {
@@ -110,7 +110,7 @@ build_package_lists() {
     librrdtool-oo-perl python3-rrdtool librrd-dev
     apache2 libapache2-mod-php php php-sqlite3 php-cli php-gmp php-gd
     php-bcmath php-mbstring php-pear php-curl php-xml php-zip libyaml-perl
-    snmp snmp-mibs-downloader
+    snmp snmp-mibs-downloader tcpdump
   )
 
   OPTIONAL_PACKAGES=(
@@ -296,6 +296,7 @@ install_project() {
 
   mkdir -p "${PROJECT_DIR}/rrd"
   mkdir -p "${PROJECT_DIR}/asstats"
+  mkdir -p "${PROJECT_DIR}/conf"
   mkdir -p "${PROJECT_DIR}/www/asset"
 
   if [[ -f "${PROJECT_DIR}/ip2asn/ip2as.pm" ]]; then
@@ -365,10 +366,8 @@ validate_snmp_raw_walk() {
 }
 
 generate_tag() {
-  local source candidate suffix
-  source="$1"
-  candidate="$(printf '%s' "${source}" | tr -c '[:alnum:]' '_' | sed 's/^_*//; s/_*$//; s/__*/_/g' | cut -c1-12)"
-  [[ -n "${candidate}" ]] || candidate="if${2}"
+  local candidate suffix
+  candidate="if$2"
 
   if [[ -z "${USED_TAGS[${candidate}]:-}" ]]; then
     USED_TAGS["${candidate}"]=1
@@ -378,7 +377,7 @@ generate_tag() {
 
   suffix=1
   while :; do
-    candidate="$(printf '%.10s%02d' "$(printf '%s' "${source}" | tr -c '[:alnum:]' '_' | sed 's/^_*//; s/_*$//; s/__*/_/g')" "${suffix}")"
+    candidate="if${2}_${suffix}"
     if [[ -z "${USED_TAGS[${candidate}]:-}" ]]; then
       USED_TAGS["${candidate}"]=1
       printf '%s' "${candidate}"
@@ -490,21 +489,17 @@ EOF
   printf "\n"
   awk -F '\t' 'BEGIN { printf "%-16s %-8s %-14s %-40s %-8s %-8s\n", "EXPORTADOR", "IFINDEX", "TAG", "DESCRICAO", "COR", "SAMPLE" }
     /^[[:space:]]*#/ { next }
-    NF >= 6 { printf "%-16s %-8s %-14s %-40.40s %-8s %-8s\n", $1, $2, $3, $4, $5, $6 }' "${preview_file}"
+    NF >= 6 { printf "%-16s %-8s %-14s %-40s %-8s %-8s\n", $1, $2, $3, $4, $5, $6 }' "${preview_file}"
   printf "\n"
 
-  printf "Confirmar gravacao do knownlinks com essas interfaces? [Y/n]: "
-  if [[ -r /dev/tty ]]; then
-    read -r confirm < /dev/tty
-  else
-    read -r confirm
-  fi
+  read -r -p "Confirmar gravacao do knownlinks com essas interfaces? [Y/n]: " confirm
   confirm="${confirm:-Y}"
 
-  case "${confirm}" in
-    Y|y|yes|YES)
-      mv "${preview_file}" "${PROJECT_DIR}/conf/knownlinks"
-      ;;
+    case "${confirm}" in
+      Y|y|yes|YES)
+        mv "${preview_file}" "${PROJECT_DIR}/conf/knownlinks"
+        chmod 0644 "${PROJECT_DIR}/conf/knownlinks"
+        ;;
     *)
       rm -f "${preview_file}"
       fail "Gravacao do knownlinks cancelada pelo usuario"
@@ -512,6 +507,368 @@ EOF
   esac
 
   info "knownlinks gerado automaticamente com $(grep -cvE '^\s*#|^\s*$' "${PROJECT_DIR}/conf/knownlinks") interfaces"
+}
+
+customize_web_ui() {
+  info "Aplicando tema futurista CECTI na WebUI"
+
+  [[ -d "${PROJECT_DIR}/www/css" ]] || {
+    warn "Diretorio de CSS da WebUI nao encontrado em ${PROJECT_DIR}/www/css"
+    return
+  }
+
+  cat > "${PROJECT_DIR}/www/css/custom.css" <<'EOF'
+:root {
+  --cecti-bg: #07111f;
+  --cecti-panel: rgba(10, 21, 38, 0.82);
+  --cecti-border: rgba(77, 212, 255, 0.28);
+  --cecti-text: #eaf7ff;
+  --cecti-muted: #8aa6bf;
+  --cecti-accent: #4dd4ff;
+  --cecti-accent-2: #00ffa6;
+  --cecti-shadow: 0 22px 50px rgba(0, 0, 0, 0.42);
+}
+
+html,
+body {
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(0, 255, 166, 0.10), transparent 26%),
+    radial-gradient(circle at top right, rgba(77, 212, 255, 0.13), transparent 28%),
+    linear-gradient(180deg, #06101c 0%, #081321 48%, #050b14 100%);
+  color: var(--cecti-text);
+}
+
+body.hold-transition {
+  font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+}
+
+.wrapper,
+.content-wrapper,
+.main-footer,
+.main-header .navbar {
+  background: transparent !important;
+}
+
+.content-wrapper {
+  position: relative;
+  min-height: calc(100vh - 56px);
+  padding-bottom: 26px;
+}
+
+.content-wrapper::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(77, 212, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(77, 212, 255, 0.05) 1px, transparent 1px);
+  background-size: 32px 32px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.content-wrapper > * {
+  position: relative;
+  z-index: 1;
+}
+
+.main-header .navbar {
+  border: 0;
+  box-shadow: none;
+}
+
+.main-header .container {
+  margin-top: 14px;
+  padding: 0 18px;
+  border: 1px solid var(--cecti-border);
+  border-radius: 20px;
+  background: rgba(7, 17, 31, 0.78);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--cecti-shadow);
+}
+
+.navbar-brand {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  height: 58px;
+  padding: 0 18px !important;
+  color: var(--cecti-text) !important;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 68px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(77, 212, 255, 0.35);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(77, 212, 255, 0.22), rgba(0, 255, 166, 0.12));
+  box-shadow: 0 0 24px rgba(77, 212, 255, 0.16);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.brand-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cecti-muted);
+}
+
+.navbar-nav > li > a,
+.navbar-form .btn,
+.navbar-toggle {
+  color: var(--cecti-text) !important;
+}
+
+.navbar-nav > li > a {
+  height: 58px;
+  padding-top: 19px;
+  padding-bottom: 19px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.navbar-nav > .active > a,
+.navbar-nav > li > a:hover,
+.navbar-nav > li > a:focus,
+.navbar-nav > .open > a,
+.navbar-nav > .open > a:hover,
+.navbar-nav > .open > a:focus {
+  background: rgba(77, 212, 255, 0.10) !important;
+  color: #ffffff !important;
+}
+
+.dropdown-menu {
+  border: 1px solid var(--cecti-border);
+  border-radius: 16px;
+  background: rgba(8, 20, 37, 0.96);
+  box-shadow: var(--cecti-shadow);
+}
+
+.dropdown-menu > li > a {
+  color: var(--cecti-text);
+}
+
+.dropdown-menu > li > a:hover {
+  background: rgba(77, 212, 255, 0.12);
+  color: #ffffff;
+}
+
+.content-header {
+  margin: 26px 18px 20px;
+  padding: 24px 28px;
+  border: 1px solid var(--cecti-border);
+  border-radius: 26px;
+  background:
+    linear-gradient(135deg, rgba(77, 212, 255, 0.12), rgba(0, 255, 166, 0.05)),
+    rgba(7, 17, 31, 0.78);
+  box-shadow: var(--cecti-shadow);
+}
+
+.content-header > h1 {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: 0.03em;
+}
+
+.content-header > h1 > small {
+  display: inline-block;
+  margin-left: 10px;
+  color: var(--cecti-accent);
+  font-size: 15px;
+}
+
+.content-header > .breadcrumb {
+  position: static;
+  float: none;
+  margin-top: 14px;
+  padding: 0;
+  background: transparent;
+  color: var(--cecti-muted);
+  font-size: 13px;
+}
+
+hr {
+  display: none;
+}
+
+.content {
+  padding: 0 18px 28px;
+}
+
+.box {
+  overflow: hidden;
+  border: 1px solid var(--cecti-border);
+  border-radius: 24px;
+  background: var(--cecti-panel);
+  box-shadow: var(--cecti-shadow);
+}
+
+.box::before {
+  content: "";
+  display: block;
+  height: 3px;
+  background: linear-gradient(90deg, var(--cecti-accent), var(--cecti-accent-2));
+}
+
+.box-header,
+.box-header.with-border {
+  border-bottom: 1px solid rgba(77, 212, 255, 0.12);
+}
+
+.box-title,
+.box-header > .fa {
+  color: #ffffff !important;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.box-body,
+.box-footer {
+  background: transparent;
+  color: var(--cecti-text);
+}
+
+.btn,
+.form-control,
+.input-group .input-group-btn .btn {
+  border-radius: 14px !important;
+}
+
+.btn {
+  border: 1px solid rgba(77, 212, 255, 0.24);
+  background: linear-gradient(135deg, rgba(77, 212, 255, 0.20), rgba(0, 255, 166, 0.12));
+  color: #ffffff;
+}
+
+.btn:hover,
+.btn:focus {
+  color: #ffffff;
+  box-shadow: 0 0 24px rgba(77, 212, 255, 0.16);
+}
+
+.form-control {
+  border: 1px solid rgba(77, 212, 255, 0.18);
+  background: rgba(4, 12, 23, 0.92);
+  color: #ffffff;
+}
+
+.form-control:focus {
+  border-color: rgba(77, 212, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(77, 212, 255, 0.08);
+}
+
+.li-padding {
+  margin-bottom: 14px;
+  padding: 18px 16px;
+  border: 1px solid rgba(77, 212, 255, 0.10);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+li.even {
+  background: rgba(77, 212, 255, 0.05);
+}
+
+.rank {
+  color: var(--cecti-accent);
+  text-shadow: 0 0 20px rgba(77, 212, 255, 0.18);
+}
+
+.small,
+small {
+  color: var(--cecti-muted) !important;
+}
+
+a {
+  color: var(--cecti-accent);
+}
+
+a:hover,
+a:focus {
+  color: #8febff;
+}
+
+.main-footer {
+  margin: 22px 18px 12px;
+  padding: 18px 24px;
+  border: 1px solid var(--cecti-border);
+  border-radius: 20px;
+  background: rgba(7, 17, 31, 0.78);
+  color: var(--cecti-muted);
+  box-shadow: var(--cecti-shadow);
+}
+
+.main-footer strong {
+  color: #ffffff;
+}
+
+img.img-responsive {
+  border-radius: 14px;
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.34);
+}
+
+table,
+pre {
+  color: var(--cecti-text);
+}
+
+.searchBox {
+  background-image: url('../images/ajax-loader.gif');
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+@media (max-width: 767px) {
+  .main-header .container,
+  .content-header,
+  .content,
+  .main-footer {
+    margin-left: 10px;
+    margin-right: 10px;
+  }
+
+  .navbar-brand {
+    gap: 8px;
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+
+  .brand-text {
+    display: none;
+  }
+
+  .content-header > h1 {
+    font-size: 24px;
+  }
+}
+EOF
+
+  if [[ -f "${PROJECT_DIR}/www/func.inc" ]]; then
+    sed -i 's|<a href="index.php" class="navbar-brand"><b>AS-Stats</b></a>|<a href="index.php" class="navbar-brand"><span class="brand-mark">CECTI</span><span class="brand-text">Flow Observatory</span></a>|' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's|<b>GUI Version</b> 0.2|<b>Interface</b> Futuristic Edition|' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's|<strong>AS-Stats v1.6</strong> por Manuel Kasper|<strong>CECTI Flow Observatory</strong>|' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's| - GUI por Nicolas Debrigode||' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's| - Personalizado e traduzido por Rudimar Remontti| - personalizado por CECTI|' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's|<a href="index.php">Top AS</a>|<a href="index.php">Radar AS</a>|g' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's|Top AS <span class="caret"></span>|Radar AS <span class="caret"></span>|g' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's|Top AS - |Radar AS - |g' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's|<a href="history.php">Ver AS</a>|<a href="history.php">Consultar AS</a>|' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's|<a href="asset.php">Ver AS-SET</a>|<a href="asset.php">Consultar AS-SET</a>|' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's|<a href="ix.php">Ver IX Stats</a>|<a href="ix.php">IX Analytics</a>|' "${PROJECT_DIR}/www/func.inc"
+    sed -i 's|Link Usage|Fluxo por Link|g' "${PROJECT_DIR}/www/func.inc"
+  else
+    warn "Arquivo ${PROJECT_DIR}/www/func.inc nao encontrado para personalizacao"
+  fi
 }
 
 configure_web() {
@@ -522,7 +879,10 @@ configure_web() {
     sed -i "s/\\\$my_asn = \".*\";/\\\$my_asn = \"${ASSTATS_MY_ASN}\";/" "${PROJECT_DIR}/www/config.inc" || true
   fi
 
+  customize_web_ui
+
   chown -R www-data:www-data "${PROJECT_DIR}/www/asset"
+  chmod 0755 /data "${PROJECT_DIR}" "${PROJECT_DIR}/conf" "${PROJECT_DIR}/asstats" "${PROJECT_DIR}/www" || true
   a2enmod rewrite >/dev/null 2>&1 || true
   systemctl enable --now apache2
 }
@@ -625,6 +985,40 @@ EOF
   systemctl enable --now asstats-extract.timer
 }
 
+detect_flow_exporter_ip() {
+  info "Tentando detectar o IP de origem do flow"
+
+  local detected_flow_ip tcpdump_output
+  if ! command -v tcpdump >/dev/null 2>&1; then
+    warn "tcpdump nao encontrado; nao vou detectar o IP real de origem do flow"
+    return 0
+  fi
+
+  tcpdump_output="$(timeout 20 tcpdump -ni any -c 1 "udp port ${ASSTATS_PORT_NETFLOW}" 2>/dev/null || true)"
+  if [[ -z "${tcpdump_output}" ]]; then
+    warn "Nao capturei flow em ate 20 segundos. Vou manter o IP do exportador SNMP no knownlinks."
+    return 0
+  fi
+
+  detected_flow_ip="$(printf '%s\n' "${tcpdump_output}" | sed -nE 's/.* IP ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+ > .*/\1/p' | head -n 1)"
+  if [[ -z "${detected_flow_ip}" ]]; then
+    warn "Nao consegui extrair o IP de origem do flow a partir do tcpdump"
+    return 0
+  fi
+
+  info "IP de origem do flow detectado: ${detected_flow_ip}"
+  if [[ "${detected_flow_ip}" != "${ASSTATS_EXPORTER_HOST}" ]]; then
+    warn "O flow chegou com IP ${detected_flow_ip}, diferente do host SNMP ${ASSTATS_EXPORTER_HOST}. Vou ajustar o knownlinks."
+    awk -v new_ip="${detected_flow_ip}" 'BEGIN { OFS="\t" }
+      /^[[:space:]]*#/ || /^[[:space:]]*$/ { print; next }
+      NF >= 6 { $1 = new_ip; print $1, $2, $3, $4, $5, $6; next }
+      { print }' "${PROJECT_DIR}/conf/knownlinks" > "${PROJECT_DIR}/conf/knownlinks.tmp"
+    mv "${PROJECT_DIR}/conf/knownlinks.tmp" "${PROJECT_DIR}/conf/knownlinks"
+    chmod 0644 "${PROJECT_DIR}/conf/knownlinks" || true
+    systemctl restart asstatsd.service
+  fi
+}
+
 configure_firewall() {
   [[ "${ASSTATS_ENABLE_UFW}" == "yes" ]] || return
   info "Configurando UFW"
@@ -639,6 +1033,9 @@ run_correctives() {
     grep -q '\$my_asn' "${PROJECT_DIR}/www/config.inc" || warn "Nao encontrei \$my_asn em config.inc"
   fi
 
+  chmod 0755 /data "${PROJECT_DIR}" "${PROJECT_DIR}/conf" "${PROJECT_DIR}/asstats" "${PROJECT_DIR}/www" || true
+  [[ -f "${PROJECT_DIR}/conf/knownlinks" ]] && chmod 0644 "${PROJECT_DIR}/conf/knownlinks" || true
+
   if [[ -f "${PROJECT_DIR}/conf/knownlinks" ]]; then
     if ! perl "${PROJECT_DIR}/bin/rrd-extractstats.pl" \
       "${PROJECT_DIR}/rrd" \
@@ -646,9 +1043,12 @@ run_correctives() {
       "${PROJECT_DIR}/asstats/asstats_day.txt"; then
       warn "Nao foi possivel gerar o asstats_day.txt automaticamente neste momento"
       log_error_file "Falha ao executar rrd-extractstats.pl durante as corretivas"
+    else
+      chmod 0644 "${PROJECT_DIR}/asstats/asstats_day.txt" || true
     fi
   elif [[ ! -e "${PROJECT_DIR}/asstats/asstats_day.txt" ]]; then
     touch "${PROJECT_DIR}/asstats/asstats_day.txt"
+    chmod 0644 "${PROJECT_DIR}/asstats/asstats_day.txt" || true
   fi
 }
 
@@ -743,6 +1143,7 @@ main() {
   configure_web
   configure_knownlinks
   install_systemd_units
+  detect_flow_exporter_ip
   configure_firewall
   run_correctives
   verify_installation
