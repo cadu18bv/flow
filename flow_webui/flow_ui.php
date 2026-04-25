@@ -179,6 +179,8 @@ function flow_render_legend_form($knownlinks, $selectedLinks, $hours, $ntop, $ac
 }
 
 function flow_render_as_row($rank, $as, $asinfo, $nbytes, $start, $end, $peerusage, $selectedLinks, $showv6) {
+    global $customlinks;
+
     $flag = '';
     if (isset($asinfo['country'])) {
         $flagfile = 'flags/' . strtolower($asinfo['country']) . '.gif';
@@ -195,12 +197,25 @@ function flow_render_as_row($rank, $as, $asinfo, $nbytes, $start, $end, $peerusa
 
     $graph4 = getHTMLUrl($as, 4, $asinfo['descr'], $start, $end, $peerusage, $selectedLinks);
     $graph6 = $showv6 ? getHTMLUrl($as, 6, $asinfo['descr'], $start, $end, $peerusage, $selectedLinks) : '';
+    $quickLinks = '';
+
+    if (isset($customlinks) && is_array($customlinks)) {
+        $linkItems = array();
+        foreach ($customlinks as $linkName => $url) {
+            $label = ($linkName === 'HE') ? 'bgp.he' : $linkName;
+            $linkItems[] = '<a class="flow-quick-link" href="' . htmlspecialchars(str_replace('%as%', $as, $url)) . '" target="_blank" rel="noopener noreferrer">' . htmlspecialchars($label) . '</a>';
+        }
+        if (!empty($linkItems)) {
+            $quickLinks = '<div class="flow-quick-links">' . implode('', $linkItems) . '</div>';
+        }
+    }
 
     $html = '<article class="flow-as-row">';
     $html .= '<div class="flow-as-meta">';
     $html .= '<span class="flow-rank">#' . (int)$rank . '</span>';
     $html .= '<div class="flow-as-title">' . $flag . '<strong>AS' . htmlspecialchars($as) . '</strong></div>';
     $html .= '<p>' . htmlspecialchars($asinfo['descr']) . '</p>';
+    $html .= $quickLinks;
     $html .= '<div class="flow-micro-metrics">';
     $html .= '<span>IPv4 IN ' . htmlspecialchars(format_bytes($in4)) . '</span>';
     $html .= '<span>IPv4 OUT ' . htmlspecialchars(format_bytes($out4)) . '</span>';
@@ -240,9 +255,9 @@ function flow_render_dual_graph($title, $graph4, $graph6 = '') {
 }
 
 function flow_render_link_card($title, $graph4, $graph6 = '') {
-    $html = '<article class="flow-link-card">';
+    $html = '<article class="flow-link-card flow-link-card-observe">';
     $html .= '<header><span>' . htmlspecialchars($title) . '</span></header>';
-    $html .= '<div class="flow-graph-pair">';
+    $html .= '<div class="flow-graph-pair flow-graph-pair-stack">';
     $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div>' . $graph4 . '</div>';
     if ($graph6 !== '') {
         $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div>' . $graph6 . '</div>';

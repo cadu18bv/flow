@@ -296,13 +296,13 @@ echo flow_render_hero(
     $summaryCards
 );
 
-$form = '<form method="get" action="ipsearch.php" class="flow-form-stack">'
+$form = '<form method="get" action="ipsearch.php" class="flow-form-stack flow-search-form">'
     . '<label>IP de origem ou destino</label>'
-    . '<div class="flow-inline-form">'
-    . '<input class="flow-input" type="text" name="ip" value="' . htmlspecialchars($queryIp) . '" placeholder="Ex.: 8.8.8.8 ou 2800:3f0:4001:..." />'
-    . flow_render_select('mode', $queryMode, array('any' => 'Qualquer lado', 'src' => 'Somente origem', 'dst' => 'Somente destino'))
-    . flow_render_select('hours', $queryHours, flow_query_hours_options())
-    . '<button class="flow-button" type="submit">Investigar</button>'
+    . '<div class="flow-inline-form flow-search-row">'
+    . '<input class="flow-input flow-input-xl flow-search-ip" type="text" name="ip" value="' . htmlspecialchars($queryIp) . '" placeholder="Ex.: 8.8.8.8 ou 2800:3f0:4001:..." />'
+    . str_replace('class="flow-input"', 'class="flow-input flow-search-select"', flow_render_select('mode', $queryMode, array('any' => 'Qualquer lado', 'src' => 'Somente origem', 'dst' => 'Somente destino')))
+    . str_replace('class="flow-input"', 'class="flow-input flow-search-hours"', flow_render_select('hours', $queryHours, flow_query_hours_options()))
+    . '<button class="flow-button flow-button-xl flow-search-submit" type="submit">Investigar</button>'
     . '</div>'
     . '</form>';
 

@@ -281,6 +281,12 @@ a:focus {
   color: #ffffff;
 }
 
+.flow-input-xl {
+  min-height: 52px;
+  padding: 0 18px;
+  font-size: 16px;
+}
+
 .flow-button {
   min-height: 44px;
   padding: 0 16px;
@@ -294,6 +300,11 @@ a:focus {
   text-transform: uppercase;
 }
 
+.flow-button-xl {
+  min-height: 52px;
+  padding: 0 22px;
+}
+
 .flow-button-ghost {
   background: rgba(77, 212, 255, 0.06);
 }
@@ -304,6 +315,34 @@ a:focus {
   border-radius: 14px;
   background: rgba(255, 107, 142, 0.08);
   color: #ffd8e3;
+}
+
+.flow-search-form {
+  gap: 16px;
+}
+
+.flow-search-row {
+  align-items: stretch;
+  gap: 12px;
+}
+
+.flow-search-ip {
+  flex: 1 1 420px;
+  min-width: 320px;
+}
+
+.flow-search-select {
+  flex: 0 0 220px;
+  min-width: 200px;
+}
+
+.flow-search-hours {
+  flex: 0 0 160px;
+  min-width: 140px;
+}
+
+.flow-search-submit {
+  flex: 0 0 180px;
 }
 
 .flow-legend-grid {
@@ -367,6 +406,33 @@ a:focus {
 .flow-as-meta p {
   margin: 0 0 12px;
   color: var(--flow-muted);
+}
+
+.flow-quick-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.flow-quick-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid rgba(77, 212, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(77, 212, 255, 0.06);
+  color: #dff8ff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.flow-quick-link:hover,
+.flow-quick-link:focus {
+  background: rgba(77, 212, 255, 0.14);
+  color: #ffffff;
 }
 
 .flow-micro-metrics {
@@ -437,6 +503,19 @@ a:focus {
   border: 1px solid rgba(77, 212, 255, 0.10);
 }
 
+.flow-graph-pair-stack {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.flow-link-card-observe .flow-graph-card {
+  padding: 16px;
+}
+
+.flow-link-card-observe .flow-graph-card img {
+  min-height: 320px;
+  object-fit: contain;
+}
+
 .flow-graph-label {
   margin-bottom: 10px;
   color: var(--flow-muted);
@@ -448,12 +527,16 @@ a:focus {
 
 .flow-link-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(720px, 1fr));
   gap: 18px;
 }
 
 .flow-link-card > header span {
   color: #ffffff;
+}
+
+.flow-link-card-observe > header {
+  padding: 18px 22px;
 }
 
 .flow-empty-state {
@@ -609,5 +692,13 @@ a:focus {
 
   .flow-inline-form {
     flex-direction: column;
+  }
+
+  .flow-search-ip,
+  .flow-search-select,
+  .flow-search-hours,
+  .flow-search-submit {
+    min-width: 0;
+    flex: 1 1 auto;
   }
 }
