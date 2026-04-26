@@ -2,6 +2,68 @@
 require_once("auth.php");
 require_once("flow_db.php");
 
+function flow_as_name_overrides() {
+    static $overrides = null;
+    if ($overrides !== null) {
+        return $overrides;
+    }
+
+    $overrides = array(
+        264996 => 'SERVLINK TELECOM LTDA - ME,BR',
+    );
+
+    $candidateFiles = array(
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'conf' . DIRECTORY_SEPARATOR . 'asn_overrides.tsv',
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'conf' . DIRECTORY_SEPARATOR . 'asn_overrides.txt',
+        '/data/asstats/conf/asn_overrides.tsv',
+        '/data/asstats/conf/asn_overrides.txt',
+    );
+
+    foreach ($candidateFiles as $file) {
+        if (!is_file($file) || !is_readable($file)) {
+            continue;
+        }
+        $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if (!is_array($lines)) {
+            continue;
+        }
+        foreach ($lines as $line) {
+            $line = trim((string)$line);
+            if ($line === '' || $line[0] === '#') {
+                continue;
+            }
+            $parts = preg_split('/\t+|;|=/', $line, 2);
+            if (!is_array($parts) || count($parts) < 2) {
+                continue;
+            }
+            $asn = (int)trim((string)$parts[0]);
+            $name = trim((string)$parts[1]);
+            if ($asn > 0 && $name !== '') {
+                $overrides[$asn] = $name;
+            }
+        }
+    }
+
+    return $overrides;
+}
+
+function flow_enrich_as_info($as, $asinfo) {
+    $as = (int)$as;
+    if (!is_array($asinfo)) {
+        $asinfo = array();
+    }
+    $descr = isset($asinfo['descr']) ? trim((string)$asinfo['descr']) : '';
+    $overrides = flow_as_name_overrides();
+    if ($as > 0 && isset($overrides[$as]) && trim((string)$overrides[$as]) !== '') {
+        $descr = trim((string)$overrides[$as]);
+    }
+    if ($descr === '') {
+        $descr = 'AS' . $as;
+    }
+    $asinfo['descr'] = $descr;
+    return $asinfo;
+}
+
 function flow_active_class($current, $expected) {
     return $current === $expected ? 'is-active' : '';
 }
@@ -501,6 +563,7 @@ function flow_render_legend_form($knownlinks, $selectedLinks, $hours, $ntop, $ac
 
 function flow_render_as_row($rank, $as, $asinfo, $nbytes, $start, $end, $peerusage, $selectedLinks, $showv6) {
     global $customlinks;
+    $asinfo = flow_enrich_as_info($as, $asinfo);
 
     $flag = '';
     if (isset($asinfo['country'])) {

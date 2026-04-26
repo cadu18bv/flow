@@ -315,6 +315,16 @@ function flow_noc_render_world_map($points) {
         $grid .= '<line x1="0" y1="' . $y . '" x2="' . $width . '" y2="' . $y . '"></line>';
     }
 
+    $continents = array(
+        'M110 68 L170 40 L248 48 L308 84 L320 122 L290 146 L238 140 L208 112 L170 118 L122 98 Z', // North America
+        'M262 164 L298 188 L318 232 L304 290 L278 334 L252 308 L238 262 L242 210 Z', // South America
+        'M460 72 L506 64 L546 74 L558 98 L532 112 L500 104 L472 106 L452 92 Z', // Europe
+        'M474 110 L518 116 L546 140 L552 188 L526 236 L484 262 L454 240 L444 198 L452 150 Z', // Africa
+        'M560 84 L642 74 L724 94 L778 124 L768 166 L724 172 L682 152 L628 150 L572 132 Z', // Asia
+        'M734 252 L770 246 L804 262 L816 286 L786 302 L748 294 L726 272 Z', // Australia
+        'M406 86 L424 78 L438 84 L436 98 L420 104 L406 96 Z', // Greenland/Iceland hint
+    );
+
     $dots = '';
     foreach ($points as $point) {
         $x = (($point['lon'] + 180.0) / 360.0) * $width;
@@ -324,7 +334,7 @@ function flow_noc_render_world_map($points) {
         $dots .= '<circle cx="' . round($x, 2) . '" cy="' . round($y, 2) . '" r="' . round($radius, 2) . '"><title>' . htmlspecialchars($title) . '</title></circle>';
     }
 
-    return <<<HTML
+    $html = <<<HTML
 <div class="flow-world-map">
   <svg viewBox="0 0 {$width} {$height}" role="img" aria-label="Mapa global de IPs observados">
     <defs>
@@ -342,10 +352,91 @@ function flow_noc_render_world_map($points) {
     </defs>
     <rect x="0" y="0" width="{$width}" height="{$height}" rx="26" ry="26"></rect>
     <g class="flow-world-grid">{$grid}</g>
+    <g class="flow-world-continents">
+HTML;
+
+    foreach ($continents as $path) {
+        $html .= '<path d="' . htmlspecialchars($path) . '"></path>';
+    }
+
+    $html .= <<<HTML
+    </g>
     <g class="flow-world-dots">{$dots}</g>
   </svg>
 </div>
 HTML;
+
+    return $html;
+}
+
+function flow_noc_asn_cards($rows) {
+    $totals = array();
+    foreach ($rows as $row) {
+        $asn = isset($row['remote_asn']) ? (int)$row['remote_asn'] : 0;
+        if ($asn <= 0) {
+            continue;
+        }
+        if (!isset($totals[$asn])) {
+            $totals[$asn] = 0.0;
+        }
+        $totals[$asn] += (float)$row['total_bytes'];
+    }
+
+    if (empty($totals)) {
+        return flow_render_empty_state('Sem ASN remoto em destaque', 'Ainda nao foi possivel consolidar ASN remotos na janela ativa.');
+    }
+
+    arsort($totals);
+    $html = '<div class="flow-hotspot-grid">';
+    $rank = 1;
+    foreach (array_slice($totals, 0, 8, true) as $asn => $bytes) {
+        $html .= '<article class="flow-hotspot-card">';
+        $html .= '<span>#' . $rank . '</span>';
+        $html .= '<strong>AS' . htmlspecialchars((string)$asn) . '</strong>';
+        $html .= '<small>' . htmlspecialchars(format_bytes((float)$bytes)) . '</small>';
+        $html .= '</article>';
+        $rank++;
+    }
+    $html .= '</div>';
+    return $html;
+}
+
+function flow_noc_operator_cards($rows) {
+    $totals = array();
+    foreach ($rows as $row) {
+        $geo = isset($row['geo']) && is_array($row['geo']) ? $row['geo'] : array();
+        $name = '';
+        if (isset($geo['org']) && trim((string)$geo['org']) !== '') {
+            $name = trim((string)$geo['org']);
+        } elseif (isset($geo['isp']) && trim((string)$geo['isp']) !== '') {
+            $name = trim((string)$geo['isp']);
+        }
+        if ($name === '') {
+            continue;
+        }
+        if (!isset($totals[$name])) {
+            $totals[$name] = 0.0;
+        }
+        $totals[$name] += (float)$row['total_bytes'];
+    }
+
+    if (empty($totals)) {
+        return flow_render_empty_state('Sem operadoras em destaque', 'A geolocalizacao ainda nao retornou organizacao/ISP para consolidar ranking.');
+    }
+
+    arsort($totals);
+    $html = '<div class="flow-hotspot-grid">';
+    $rank = 1;
+    foreach (array_slice($totals, 0, 8, true) as $name => $bytes) {
+        $html .= '<article class="flow-hotspot-card">';
+        $html .= '<span>#' . $rank . '</span>';
+        $html .= '<strong>' . htmlspecialchars((string)$name) . '</strong>';
+        $html .= '<small>' . htmlspecialchars(format_bytes((float)$bytes)) . '</small>';
+        $html .= '</article>';
+        $rank++;
+    }
+    $html .= '</div>';
+    return $html;
 }
 
 function flow_noc_country_cards($countries) {
@@ -464,6 +555,8 @@ echo '</div>';
 echo '<div class="flow-stack">';
 echo flow_render_panel('Mapa global de presenca', flow_noc_render_world_map($geoPoints), 'fa-globe');
 echo flow_render_panel('Hotspots por pais', flow_noc_country_cards($countryTotals), 'fa-map-marker');
+echo flow_render_panel('ASN remotos dominantes', flow_noc_asn_cards($traceRows), 'fa-signal');
+echo flow_render_panel('Operadoras / orgs remotas', flow_noc_operator_cards($traceRows), 'fa-building');
 echo flow_render_panel('Feed de rastreabilidade', flow_noc_trace_table($traceRows), 'fa-sitemap');
 echo '</div>';
 echo '</div>';

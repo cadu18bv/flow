@@ -106,6 +106,53 @@ function flow_as_drill_link_labels() {
     return $labels;
 }
 
+function flow_as_drill_sampling_map() {
+    static $sampling = null;
+    if ($sampling !== null) {
+        return $sampling;
+    }
+
+    $sampling = array();
+    if (!function_exists('getknownlinks')) {
+        return $sampling;
+    }
+
+    foreach (getknownlinks() as $link) {
+        if (!is_array($link) || !isset($link['tag'])) {
+            continue;
+        }
+        $tag = trim((string)$link['tag']);
+        if ($tag === '') {
+            continue;
+        }
+
+        $value = null;
+        foreach (array('sampling', 'samplingrate', 'linksamplingrate') as $key) {
+            if (isset($link[$key]) && trim((string)$link[$key]) !== '') {
+                $value = (int)trim((string)$link[$key]);
+                break;
+            }
+        }
+        if ($value === null || $value <= 0) {
+            $value = 1;
+        }
+        $sampling[$tag] = $value;
+    }
+
+    return $sampling;
+}
+
+function flow_as_drill_scale_bytes($bytes, $linkTag) {
+    $raw = (float)$bytes;
+    $tag = trim((string)$linkTag);
+    $map = flow_as_drill_sampling_map();
+    $factor = isset($map[$tag]) ? (int)$map[$tag] : 1;
+    if ($factor <= 0) {
+        $factor = 1;
+    }
+    return $raw * $factor;
+}
+
 function flow_as_drill_link_badge($tag) {
     $labels = flow_as_drill_link_labels();
     $tagText = htmlspecialchars((string)$tag);
@@ -289,64 +336,146 @@ if ($queryAs > 0 && isset($db) && $db) {
         }
     };
 
-    $summaryStmt = $db->prepare('SELECT COALESCE(SUM(bytes), 0) AS total_bytes, COALESCE(SUM(samples), 0) AS total_samples, COUNT(DISTINCT link_tag) AS link_count, COUNT(DISTINCT CASE WHEN src_asn = :asn THEN dst_ip ELSE src_ip END) AS counterpart_count, MAX(minute_ts) AS last_seen FROM flow_events WHERE ' . $where);
+    $summaryStmt = $db->prepare('SELECT link_tag, bytes, samples, minute_ts, CASE WHEN src_asn = :asn THEN dst_ip ELSE src_ip END AS counterpart_ip FROM flow_events WHERE ' . $where);
     $summaryStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
     $summaryStmt->bindValue(':asn', $queryAs, SQLITE3_INTEGER);
     $bindLinks($summaryStmt);
-    $summaryRow = $summaryStmt->execute()->fetchArray(SQLITE3_ASSOC);
+    $summaryResult = $summaryStmt->execute();
+    $summaryTotalBytes = 0.0;
+    $summaryTotalSamples = 0;
+    $summaryLastSeen = 0;
+    $summaryLinks = array();
+    $summaryCounterparts = array();
+    while ($summaryResult && ($summaryRow = $summaryResult->fetchArray(SQLITE3_ASSOC))) {
+        $tag = isset($summaryRow['link_tag']) ? (string)$summaryRow['link_tag'] : '';
+        $summaryTotalBytes += flow_as_drill_scale_bytes((float)$summaryRow['bytes'], $tag);
+        $summaryTotalSamples += (int)$summaryRow['samples'];
+        $summaryLastSeen = max($summaryLastSeen, (int)$summaryRow['minute_ts']);
+        if ($tag !== '') {
+            $summaryLinks[$tag] = true;
+        }
+        $counterpartIp = isset($summaryRow['counterpart_ip']) ? trim((string)$summaryRow['counterpart_ip']) : '';
+        if ($counterpartIp !== '') {
+            $summaryCounterparts[$counterpartIp] = true;
+        }
+    }
 
-    if (is_array($summaryRow) && (int)$summaryRow['total_bytes'] > 0) {
+    if ($summaryTotalBytes > 0) {
         $summaryCards = array(
             array('label' => 'ASN', 'value' => 'AS' . $queryAs),
-            array('label' => 'Trafego agregado', 'value' => format_bytes((int)$summaryRow['total_bytes'])),
-            array('label' => 'Samples', 'value' => number_format((int)$summaryRow['total_samples'], 0, ',', '.')),
-            array('label' => 'Contrapartes', 'value' => number_format((int)$summaryRow['counterpart_count'], 0, ',', '.')),
-            array('label' => 'Links ativos', 'value' => number_format((int)$summaryRow['link_count'], 0, ',', '.')),
-            array('label' => 'Ultima amostra', 'value' => !empty($summaryRow['last_seen']) ? flow_format_timestamp_local((int)$summaryRow['last_seen'], 'd/m H:i') : 'sem dados'),
+            array('label' => 'Trafego agregado (estimado)', 'value' => format_bytes((int)round($summaryTotalBytes))),
+            array('label' => 'Samples', 'value' => number_format((int)$summaryTotalSamples, 0, ',', '.')),
+            array('label' => 'Contrapartes', 'value' => number_format(count($summaryCounterparts), 0, ',', '.')),
+            array('label' => 'Links ativos', 'value' => number_format(count($summaryLinks), 0, ',', '.')),
+            array('label' => 'Ultima amostra', 'value' => $summaryLastSeen > 0 ? flow_format_timestamp_local((int)$summaryLastSeen, 'd/m H:i') : 'sem dados'),
         );
         $heroBody = 'Relatorio detalhado de consumo por IP do AS' . $queryAs . ', considerando a janela atual e os links filtrados no Radar AS.';
         $title = 'Drilldown AS' . $queryAs;
 
-        $timelineStmt = $db->prepare('SELECT minute_ts, SUM(bytes) AS total_bytes FROM flow_events WHERE ' . $where . ' GROUP BY minute_ts ORDER BY minute_ts');
+        $timelineStmt = $db->prepare('SELECT minute_ts, link_tag, SUM(bytes) AS total_bytes FROM flow_events WHERE ' . $where . ' GROUP BY minute_ts, link_tag ORDER BY minute_ts');
         $timelineStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
         $timelineStmt->bindValue(':asn', $queryAs, SQLITE3_INTEGER);
         $bindLinks($timelineStmt);
         $timelineResult = $timelineStmt->execute();
         $points = array();
         while ($row = $timelineResult->fetchArray(SQLITE3_ASSOC)) {
-            $points[(int)$row['minute_ts']] = (int)$row['total_bytes'];
+            $minuteTs = (int)$row['minute_ts'];
+            if (!isset($points[$minuteTs])) {
+                $points[$minuteTs] = 0.0;
+            }
+            $points[$minuteTs] += flow_as_drill_scale_bytes((float)$row['total_bytes'], isset($row['link_tag']) ? $row['link_tag'] : '');
         }
         $chartHtml = flow_as_drill_query_chart($points);
 
-        $counterpartStmt = $db->prepare('SELECT CASE WHEN src_asn = :asn THEN dst_ip ELSE src_ip END AS counterpart_ip, CASE WHEN src_asn = :asn THEN dst_asn ELSE src_asn END AS counterpart_asn, SUM(bytes) AS total_bytes, COUNT(DISTINCT link_tag) AS link_count, MAX(minute_ts) AS last_seen FROM flow_events WHERE ' . $where . ' GROUP BY counterpart_ip, counterpart_asn ORDER BY total_bytes DESC LIMIT 30');
+        $counterpartStmt = $db->prepare('SELECT CASE WHEN src_asn = :asn THEN dst_ip ELSE src_ip END AS counterpart_ip, CASE WHEN src_asn = :asn THEN dst_asn ELSE src_asn END AS counterpart_asn, link_tag, SUM(bytes) AS total_bytes, SUM(samples) AS total_samples, MAX(minute_ts) AS last_seen FROM flow_events WHERE ' . $where . ' GROUP BY counterpart_ip, counterpart_asn, link_tag ORDER BY total_bytes DESC LIMIT 500');
         $counterpartStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
         $counterpartStmt->bindValue(':asn', $queryAs, SQLITE3_INTEGER);
         $bindLinks($counterpartStmt);
         $counterpartResult = $counterpartStmt->execute();
-        $counterpartRows = array();
+        $counterpartAgg = array();
         while ($row = $counterpartResult->fetchArray(SQLITE3_ASSOC)) {
+            $key = (string)$row['counterpart_ip'] . '|' . (string)$row['counterpart_asn'];
+            $scaledBytes = flow_as_drill_scale_bytes((float)$row['total_bytes'], isset($row['link_tag']) ? $row['link_tag'] : '');
+            if (!isset($counterpartAgg[$key])) {
+                $counterpartAgg[$key] = array(
+                    'ip' => (string)$row['counterpart_ip'],
+                    'asn' => (int)$row['counterpart_asn'],
+                    'bytes' => 0.0,
+                    'links' => array(),
+                    'samples' => 0,
+                    'last_seen' => 0,
+                );
+            }
+            $counterpartAgg[$key]['bytes'] += $scaledBytes;
+            $counterpartAgg[$key]['samples'] += (int)$row['total_samples'];
+            $counterpartAgg[$key]['last_seen'] = max((int)$counterpartAgg[$key]['last_seen'], (int)$row['last_seen']);
+            $tag = isset($row['link_tag']) ? trim((string)$row['link_tag']) : '';
+            if ($tag !== '') {
+                $counterpartAgg[$key]['links'][$tag] = true;
+            }
+        }
+        uasort($counterpartAgg, function ($a, $b) {
+            if ($a['bytes'] == $b['bytes']) {
+                return 0;
+            }
+            return ($a['bytes'] > $b['bytes']) ? -1 : 1;
+        });
+        $counterpartRows = array();
+        $i = 0;
+        foreach ($counterpartAgg as $item) {
+            if ($i >= 30) {
+                break;
+            }
             $counterpartRows[] = array(
-                flow_as_drill_endpoint_cell($row['counterpart_ip'], $row['counterpart_asn']),
-                format_bytes((int)$row['total_bytes']),
-                number_format((int)$row['link_count'], 0, ',', '.'),
-                !empty($row['last_seen']) ? flow_format_timestamp_local((int)$row['last_seen'], 'd/m H:i') : '-',
+                flow_as_drill_endpoint_cell($item['ip'], $item['asn']),
+                format_bytes((int)round($item['bytes'])),
+                number_format(count($item['links']), 0, ',', '.'),
+                $item['last_seen'] > 0 ? flow_format_timestamp_local((int)$item['last_seen'], 'd/m H:i') : '-',
             );
+            $i++;
         }
         $counterpartsHtml = flow_as_drill_query_table(array('Contraparte', 'Bytes', 'Links', 'Ultima atividade'), $counterpartRows);
 
-        $localStmt = $db->prepare('SELECT CASE WHEN src_asn = :asn THEN src_ip ELSE dst_ip END AS local_ip, SUM(bytes) AS total_bytes, COUNT(*) AS row_count, MAX(minute_ts) AS last_seen FROM flow_events WHERE ' . $where . ' GROUP BY local_ip ORDER BY total_bytes DESC LIMIT 30');
+        $localStmt = $db->prepare('SELECT CASE WHEN src_asn = :asn THEN src_ip ELSE dst_ip END AS local_ip, link_tag, SUM(bytes) AS total_bytes, COUNT(*) AS row_count, MAX(minute_ts) AS last_seen FROM flow_events WHERE ' . $where . ' GROUP BY local_ip, link_tag ORDER BY total_bytes DESC LIMIT 500');
         $localStmt->bindValue(':start', $windowStart, SQLITE3_INTEGER);
         $localStmt->bindValue(':asn', $queryAs, SQLITE3_INTEGER);
         $bindLinks($localStmt);
         $localResult = $localStmt->execute();
-        $localRows = array();
+        $localAgg = array();
         while ($row = $localResult->fetchArray(SQLITE3_ASSOC)) {
+            $key = (string)$row['local_ip'];
+            $scaledBytes = flow_as_drill_scale_bytes((float)$row['total_bytes'], isset($row['link_tag']) ? $row['link_tag'] : '');
+            if (!isset($localAgg[$key])) {
+                $localAgg[$key] = array(
+                    'ip' => $key,
+                    'bytes' => 0.0,
+                    'events' => 0,
+                    'last_seen' => 0,
+                );
+            }
+            $localAgg[$key]['bytes'] += $scaledBytes;
+            $localAgg[$key]['events'] += (int)$row['row_count'];
+            $localAgg[$key]['last_seen'] = max((int)$localAgg[$key]['last_seen'], (int)$row['last_seen']);
+        }
+        uasort($localAgg, function ($a, $b) {
+            if ($a['bytes'] == $b['bytes']) {
+                return 0;
+            }
+            return ($a['bytes'] > $b['bytes']) ? -1 : 1;
+        });
+        $localRows = array();
+        $i = 0;
+        foreach ($localAgg as $item) {
+            if ($i >= 30) {
+                break;
+            }
             $localRows[] = array(
-                htmlspecialchars((string)$row['local_ip']),
-                format_bytes((int)$row['total_bytes']),
-                number_format((int)$row['row_count'], 0, ',', '.'),
-                !empty($row['last_seen']) ? flow_format_timestamp_local((int)$row['last_seen'], 'd/m H:i') : '-',
+                htmlspecialchars((string)$item['ip']),
+                format_bytes((int)round($item['bytes'])),
+                number_format((int)$item['events'], 0, ',', '.'),
+                $item['last_seen'] > 0 ? flow_format_timestamp_local((int)$item['last_seen'], 'd/m H:i') : '-',
             );
+            $i++;
         }
         $localIpsHtml = flow_as_drill_query_table(array('IP do ASN', 'Bytes', 'Eventos', 'Ultima atividade'), $localRows);
 
@@ -357,6 +486,7 @@ if ($queryAs > 0 && isset($db) && $db) {
         $eventsResult = $eventsStmt->execute();
         $eventRows = array();
         while ($row = $eventsResult->fetchArray(SQLITE3_ASSOC)) {
+            $scaledEventBytes = flow_as_drill_scale_bytes((float)$row['bytes'], isset($row['link_tag']) ? $row['link_tag'] : '');
             $eventRows[] = array(
                 flow_format_timestamp_local((int)$row['minute_ts'], 'd/m H:i'),
                 flow_as_drill_link_badge($row['link_tag']),
@@ -364,7 +494,7 @@ if ($queryAs > 0 && isset($db) && $db) {
                 htmlspecialchars((string)$row['ip_version']),
                 flow_as_drill_endpoint_cell($row['src_ip'], $row['src_asn']),
                 flow_as_drill_endpoint_cell($row['dst_ip'], $row['dst_asn']),
-                format_bytes((int)$row['bytes']),
+                format_bytes((int)round($scaledEventBytes)),
                 number_format((int)$row['samples'], 0, ',', '.'),
             );
         }
@@ -374,7 +504,7 @@ if ($queryAs > 0 && isset($db) && $db) {
             . '<div class="flow-kpi"><span>ASN analisado</span><strong>AS' . htmlspecialchars((string)$queryAs) . '</strong></div>'
             . '<div class="flow-kpi"><span>Janela</span><strong>' . htmlspecialchars((string)$queryHours) . ' horas</strong></div>'
             . '<div class="flow-kpi"><span>Links filtrados</span><strong>' . htmlspecialchars(empty($selectedLinks) ? 'todos' : implode(', ', $selectedLinks)) . '</strong></div>'
-            . '<div class="flow-kpi"><span>Base</span><strong>flow_events.db</strong></div>'
+            . '<div class="flow-kpi"><span>Base</span><strong>flow_events (' . htmlspecialchars(flow_events_db_label()) . ')</strong></div>'
             . '</div>';
     }
 

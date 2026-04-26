@@ -386,7 +386,7 @@ function flow_render_dashboard_provider_card($provider, $hours, $start, $end, $s
     $group = flow_dashboard_group_usage($provider, $statsfile, $selectedLinks);
     $local = flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks);
     $dominantAsn = (int)$group['dominant_asn'];
-    $dominantInfo = $dominantAsn > 0 ? getASInfo($dominantAsn) : array('descr' => $provider['label']);
+    $dominantInfo = $dominantAsn > 0 ? flow_enrich_as_info($dominantAsn, getASInfo($dominantAsn)) : array('descr' => $provider['label']);
     $dominantDescr = isset($dominantInfo['descr']) && trim((string)$dominantInfo['descr']) !== '' ? $dominantInfo['descr'] : $provider['label'];
 
     $graph4 = $dominantAsn > 0 ? getHTMLUrl($dominantAsn, 4, $dominantDescr, $start, $end, $peerusage, $selectedLinks) : flow_render_empty_state('Sem grafico', 'Nenhum ASN do grupo gerou amostras nessa janela.');

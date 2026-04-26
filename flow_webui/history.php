@@ -9,7 +9,7 @@ $graphs = '';
 
 if (isset($_GET['as'])) {
     $as = str_replace('as', '', str_replace(' ', '', strtolower($_GET['as'])));
-    if ($as) $asinfo = getASInfo($as);
+    if ($as) $asinfo = flow_enrich_as_info($as, getASInfo($as));
     $title = 'Flow | ASN Explorer';
     $header = 'ASN Explorer';
     $header_small = 'AS' . $as;
