@@ -55,7 +55,7 @@ function flow_events_db_label() {
 
 function flow_events_available() {
     if (flow_events_is_pgsql()) {
-        return extension_loaded('pdo_pgsql');
+        return extension_loaded('pdo_pgsql') || extension_loaded('pgsql');
     }
     return is_file(flow_events_db_path());
 }
@@ -75,27 +75,46 @@ function flow_events_pdo_dsn() {
 function flow_events_open_connection(&$error = null) {
     $error = null;
     if (flow_events_is_pgsql()) {
-        if (!extension_loaded('pdo_pgsql')) {
-            $error = 'Modulo PHP pdo_pgsql nao esta carregado.';
+        if (extension_loaded('pdo_pgsql')) {
+            try {
+                $pdo = new PDO(
+                    flow_events_pdo_dsn(),
+                    flow_env_setting('ASSTATS_FLOW_USER', 'flow'),
+                    flow_env_setting('ASSTATS_FLOW_PASSWORD', ''),
+                    array(
+                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                        PDO::ATTR_TIMEOUT => 2,
+                        PDO::ATTR_EMULATE_PREPARES => true,
+                    )
+                );
+                return new FlowPgDb($pdo);
+            } catch (Exception $exception) {
+                $error = 'PDO PostgreSQL falhou: ' . $exception->getMessage();
+            }
+        }
+
+        if (extension_loaded('pgsql')) {
+            $host = flow_env_setting('ASSTATS_FLOW_DB_HOST', '127.0.0.1');
+            $port = flow_env_setting('ASSTATS_FLOW_DB_PORT', '5432');
+            $dbname = flow_env_setting('ASSTATS_FLOW_DB_NAME', 'flow_observatory');
+            $user = flow_env_setting('ASSTATS_FLOW_USER', 'flow');
+            $password = flow_env_setting('ASSTATS_FLOW_PASSWORD', '');
+            $connString = "host={$host} port={$port} dbname={$dbname} user={$user}";
+            if ($password !== '') {
+                $connString .= " password={$password}";
+            }
+
+            $conn = @pg_connect($connString);
+            if ($conn !== false) {
+                return new FlowPgsqlDb($conn);
+            }
+            $error = 'Conexao PostgreSQL falhou (driver pgsql).';
             return null;
         }
-        try {
-            $pdo = new PDO(
-                flow_events_pdo_dsn(),
-                flow_env_setting('ASSTATS_FLOW_USER', 'flow'),
-                flow_env_setting('ASSTATS_FLOW_PASSWORD', ''),
-                array(
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_TIMEOUT => 2,
-                    PDO::ATTR_EMULATE_PREPARES => true,
-                )
-            );
-            return new FlowPgDb($pdo);
-        } catch (Exception $exception) {
-            $error = 'Nao foi possivel conectar no PostgreSQL da telemetria.';
-            return null;
-        }
+
+        $error = 'Nenhum driver PostgreSQL do PHP esta carregado (pdo_pgsql/pgsql).';
+        return null;
     }
 
     $dbPath = flow_events_db_path();
@@ -117,7 +136,7 @@ function flow_events_open_connection(&$error = null) {
 }
 
 function flow_events_has_table($db, $table) {
-    if ($db instanceof FlowPgDb) {
+    if ($db instanceof FlowPgDb || $db instanceof FlowPgsqlDb) {
         return $db->hasTable($table);
     }
     if ($db instanceof SQLite3) {
@@ -225,6 +244,116 @@ class FlowPgResult {
 
     public function fetchArray($mode = null) {
         $row = $this->stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: false;
+    }
+}
+
+class FlowPgsqlDb {
+    private $conn;
+
+    public function __construct($conn) {
+        $this->conn = $conn;
+    }
+
+    public function prepare($sql) {
+        return new FlowPgsqlStmt($this->conn, $this->translateSql($sql));
+    }
+
+    public function querySingle($sql, $entireRow = false) {
+        $sql = $this->translateSql($sql);
+        $result = @pg_query($this->conn, $sql);
+        if ($result === false) {
+            return $entireRow ? array() : null;
+        }
+        $row = pg_fetch_assoc($result);
+        if (!$row) {
+            return $entireRow ? array() : null;
+        }
+        return $entireRow ? $row : reset($row);
+    }
+
+    public function exec($sql) {
+        $sql = $this->translateSql($sql);
+        return @pg_query($this->conn, $sql) !== false;
+    }
+
+    public function close() {
+        if ($this->conn !== null) {
+            @pg_close($this->conn);
+        }
+        $this->conn = null;
+    }
+
+    public function createFunction($name, $callback, $argc = null) {
+        return $name === 'flow_ip_filter_match';
+    }
+
+    public function hasTable($table) {
+        $sql = 'SELECT to_regclass($1) AS table_name';
+        $result = @pg_query_params($this->conn, $sql, array($table));
+        if ($result === false) {
+            return false;
+        }
+        $row = pg_fetch_assoc($result);
+        return !empty($row['table_name']);
+    }
+
+    private function translateSql($sql) {
+        $sql = str_replace('flow_ip_filter_match(src_ip, :ip_filter) = 1', '(src_ip::inet <<= CAST(:ip_filter AS cidr))', $sql);
+        $sql = str_replace('flow_ip_filter_match(dst_ip, :ip_filter) = 1', '(dst_ip::inet <<= CAST(:ip_filter AS cidr))', $sql);
+        $sql = str_replace('flow_dashboard_ip_match(src_ip, ', 'flow_pg_ip_match(src_ip, ', $sql);
+        $sql = str_replace('flow_dashboard_ip_match(dst_ip, ', 'flow_pg_ip_match(dst_ip, ', $sql);
+        $sql = preg_replace('/flow_pg_ip_match\((src_ip|dst_ip),\s*(:[A-Za-z0-9_]+)\)\s*=\s*1/', '($1::inet <<= CAST($2 AS cidr))', $sql);
+        return $sql;
+    }
+}
+
+class FlowPgsqlStmt {
+    private $conn;
+    private $sql;
+    private $values = array();
+
+    public function __construct($conn, $sql) {
+        $this->conn = $conn;
+        $this->sql = $sql;
+    }
+
+    public function bindValue($name, $value, $type = null) {
+        $this->values[$name] = $value;
+        return true;
+    }
+
+    public function execute() {
+        $matches = array();
+        preg_match_all('/:[A-Za-z_][A-Za-z0-9_]*/', $this->sql, $matches);
+        $orderedNames = $matches[0];
+
+        $params = array();
+        $position = 1;
+        $sql = $this->sql;
+        foreach ($orderedNames as $name) {
+            $sql = preg_replace('/' . preg_quote($name, '/') . '\b/', '$' . $position, $sql, 1);
+            $params[] = array_key_exists($name, $this->values) ? $this->values[$name] : null;
+            $position++;
+        }
+
+        $result = @pg_query_params($this->conn, $sql, $params);
+        if ($result === false) {
+            return false;
+        }
+        return new FlowPgsqlResult($result);
+    }
+}
+
+class FlowPgsqlResult {
+    private $result;
+
+    public function __construct($result) {
+        $this->result = $result;
+    }
+
+    public function fetchArray($mode = null) {
+        $row = pg_fetch_assoc($this->result);
         return $row ?: false;
     }
 }

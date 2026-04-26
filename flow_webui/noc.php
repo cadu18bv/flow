@@ -4,7 +4,8 @@ require_once("flow_ui.php");
 
 function flow_noc_db_open() {
     $error = null;
-    return flow_events_open_connection($error);
+    $db = flow_events_open_connection($error);
+    return array($db, $error);
 }
 
 function flow_noc_db_health($db) {
@@ -414,7 +415,8 @@ $limit = $limit > 0 ? min($limit, 100) : 20;
 $knownlinks = getknownlinks();
 $selectedLinks = flow_noc_selected_links($knownlinks);
 $windowStart = time() - ($hours * 3600);
-$db = flow_noc_db_open();
+$dbError = null;
+list($db, $dbError) = flow_noc_db_open();
 $traceRows = array();
 $countryTotals = array();
 $geoPoints = array();
@@ -454,7 +456,7 @@ echo flow_render_panel('Controles do NOC', flow_render_filter_form($hours, $limi
 echo flow_render_panel('Links monitorados', flow_render_legend_form($knownlinks, $selectedLinks, $hours, $limit, 'noc.php'), 'fa-random');
 echo flow_render_panel(
     'Fonte de geolocalizacao',
-    '<div class="flow-copy-block"><p>Os IPs publicos sao resolvidos sob demanda e ficam em cache local. Enderecos privados aparecem como LAN. Quando o servico externo nao responde, o painel mantem a trilha tecnica sem geolocalizacao.</p><p>Base: ' . htmlspecialchars($dbHealth['ready'] ? 'flow_events pronta' : 'flow_events indisponivel') . ' | Ultima amostra: ' . htmlspecialchars($dbHealth['last_seen'] ? date('d/m H:i', (int)$dbHealth['last_seen']) : 'sem dados') . '</p></div>',
+    '<div class="flow-copy-block"><p>Os IPs publicos sao resolvidos sob demanda e ficam em cache local. Enderecos privados aparecem como LAN. Quando o servico externo nao responde, o painel mantem a trilha tecnica sem geolocalizacao.</p><p>Base: ' . htmlspecialchars($dbHealth['ready'] ? 'flow_events pronta' : 'flow_events indisponivel') . ' | Ultima amostra: ' . htmlspecialchars($dbHealth['last_seen'] ? date('d/m H:i', (int)$dbHealth['last_seen']) : 'sem dados') . '</p>' . ($dbError ? '<p><strong>Erro DB:</strong> ' . htmlspecialchars($dbError) . '</p>' : '') . '</div>',
     'fa-globe'
 );
 echo '</div>';

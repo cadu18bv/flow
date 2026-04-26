@@ -264,7 +264,7 @@ function flow_query_has_events_table($db) {
 }
 
 function flow_query_register_ip_matcher($db) {
-    if ($db instanceof FlowPgDb) {
+    if ($db instanceof FlowPgDb || $db instanceof FlowPgsqlDb) {
         return true;
     }
     if (!$db instanceof SQLite3) {

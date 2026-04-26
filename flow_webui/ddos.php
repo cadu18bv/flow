@@ -4,7 +4,8 @@ require_once("flow_ui.php");
 
 function flow_ddos_db_open() {
     $error = null;
-    return flow_events_open_connection($error);
+    $db = flow_events_open_connection($error);
+    return array($db, $error);
 }
 
 function flow_ddos_db_health($db) {
@@ -335,7 +336,8 @@ $limit = $limit > 0 ? min($limit, 100) : 20;
 $knownlinks = getknownlinks();
 $selectedLinks = flow_ddos_selected_links($knownlinks);
 $windowStart = time() - ($hours * 3600);
-$db = flow_ddos_db_open();
+$dbError = null;
+list($db, $dbError) = flow_ddos_db_open();
 
 $targets = array();
 $attackers = array();
@@ -375,7 +377,7 @@ echo flow_render_panel('Controles de observacao', flow_render_filter_form($hours
 echo flow_render_panel('Links monitorados', flow_render_legend_form($knownlinks, $selectedLinks, $hours, $limit, 'ddos.php'), 'fa-random');
 echo flow_render_panel(
     'Heuristica aplicada',
-    '<div class="flow-copy-block"><p>Os alvos sao ranqueados por numero de origens unicas, samples agregados e persistencia. A leitura agora usa todo evento de destino disponivel, sem depender exclusivamente de direction=in.</p><p>Base: ' . htmlspecialchars($dbHealth['ready'] ? 'flow_events pronta' : 'flow_events indisponivel') . ' | Ultima amostra: ' . htmlspecialchars($dbHealth['last_seen'] ? date('d/m H:i', (int)$dbHealth['last_seen']) : 'sem dados') . '</p></div>',
+    '<div class="flow-copy-block"><p>Os alvos sao ranqueados por numero de origens unicas, samples agregados e persistencia. A leitura agora usa todo evento de destino disponivel, sem depender exclusivamente de direction=in.</p><p>Base: ' . htmlspecialchars($dbHealth['ready'] ? 'flow_events pronta' : 'flow_events indisponivel') . ' | Ultima amostra: ' . htmlspecialchars($dbHealth['last_seen'] ? date('d/m H:i', (int)$dbHealth['last_seen']) : 'sem dados') . '</p>' . ($dbError ? '<p><strong>Erro DB:</strong> ' . htmlspecialchars($dbError) . '</p>' : '') . '</div>',
     'fa-info-circle'
 );
 echo '</div>';
