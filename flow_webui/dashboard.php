@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 require_once("func.inc");
 require_once("flow_ui.php");
 
@@ -418,7 +418,7 @@ function flow_render_dashboard_provider_card($provider, $hours, $start, $end, $s
     $html .= '<div class="flow-provider-copy">';
     $html .= '<span class="flow-eyebrow">' . htmlspecialchars($provider['eyebrow']) . '</span>';
     $html .= '<h3>' . htmlspecialchars($provider['label']) . '</h3>';
-    $html .= '<p>Grupo com ' . htmlspecialchars((string)count($provider['asns'])) . ' ASN mapeados • ' . htmlspecialchars((string)$memberCount) . ' ativos na janela</p>';
+    $html .= '<p>Grupo com ' . htmlspecialchars((string)count($provider['asns'])) . ' ASN mapeados â€¢ ' . htmlspecialchars((string)$memberCount) . ' ativos na janela</p>';
     $html .= '</div>';
     $html .= '<div class="flow-provider-actions">';
     if ($dominantAsn > 0) {
@@ -442,7 +442,7 @@ function flow_render_dashboard_provider_card($provider, $hours, $start, $end, $s
         $html .= '<span>ASN dominante AS' . htmlspecialchars((string)$dominantAsn) . '</span>';
     }
     $html .= '</div>';
-    $html .= '<div class="flow-provider-note">Grafico de referencia baseado no ASN dominante da janela atual: ' . htmlspecialchars($dominantAsn > 0 ? ('AS' . $dominantAsn . ' • ' . $dominantDescr) : 'sem ASN ativo') . '</div>';
+    $html .= '<div class="flow-provider-note">Grafico de referencia baseado no ASN dominante da janela atual: ' . htmlspecialchars($dominantAsn > 0 ? ('AS' . $dominantAsn . ' â€¢ ' . $dominantDescr) : 'sem ASN ativo') . '</div>';
     $html .= '</section>';
 
     $html .= '<section class="flow-provider-slice">';
@@ -456,12 +456,12 @@ function flow_render_dashboard_provider_card($provider, $hours, $start, $end, $s
     }
     $html .= '<span>Status ' . htmlspecialchars($local['status']) . '</span>';
     $html .= '</div>';
-    $html .= '<div class="flow-provider-note">Links homologados: ' . htmlspecialchars($localLinks) . ' • ASN homologados: ' . htmlspecialchars($localAsns) . ' • Prefixos: ' . htmlspecialchars($localPrefixes) . '</div>';
+    $html .= '<div class="flow-provider-note">Links homologados: ' . htmlspecialchars($localLinks) . ' â€¢ ASN homologados: ' . htmlspecialchars($localAsns) . ' â€¢ Prefixos: ' . htmlspecialchars($localPrefixes) . '</div>';
     $html .= '<div class="flow-provider-note">' . htmlspecialchars($local['note']) . '</div>';
     $html .= '</section>';
 
     $html .= '<section class="flow-provider-slice">';
-    $html .= '<header><strong>CDN compartilhado não classificado</strong><span>volume presente na malha local sem assinatura segura do provedor</span></header>';
+    $html .= '<header><strong>CDN compartilhado nÃ£o classificado</strong><span>volume presente na malha local sem assinatura segura do provedor</span></header>';
     $html .= '<div class="flow-provider-micro">';
     $html .= '<span>IPv4 IN shared ' . htmlspecialchars($sharedIn4) . '</span>';
     $html .= '<span>IPv4 OUT shared ' . htmlspecialchars($sharedOut4) . '</span>';
@@ -470,7 +470,7 @@ function flow_render_dashboard_provider_card($provider, $hours, $start, $end, $s
         $html .= '<span>IPv6 OUT shared ' . htmlspecialchars($sharedOut6) . '</span>';
     }
     $html .= '</div>';
-    $html .= '<div class="flow-provider-note">Esse bloco representa o restante do tráfego na malha CDN local homologada que ainda não bateu com assinatura suficiente para atribuição segura ao provedor.</div>';
+    $html .= '<div class="flow-provider-note">Esse bloco representa o restante do trÃ¡fego na malha CDN local homologada que ainda nÃ£o bateu com assinatura suficiente para atribuiÃ§Ã£o segura ao provedor.</div>';
     $html .= '</section>';
 
     $html .= '</div>';
@@ -521,7 +521,7 @@ flow_render_shell_start('Flow | Dashboard', 'dashboard');
 echo flow_render_hero(
     'traffic board',
     'Dashboard de consumo por plataforma',
-    'Painel executivo com separação entre entrega remota por ASN, CDN local classificado e CDN compartilhado não classificado. Assim o sistema evita empurrar volume misturado para o provedor errado.',
+    'Painel executivo focado em leitura rapida de entrega remota por ASN e CDN local classificado.',
     $heroStats
 );
 
@@ -531,7 +531,7 @@ echo flow_render_panel('Controles do dashboard', flow_render_filter_form($hours,
 echo flow_render_panel('Links monitorados', flow_render_legend_form($knownlinks, $selected_links, $hours, $ntop, 'dashboard.php'), 'fa-random');
 echo flow_render_panel(
     'Regra de classificacao',
-    '<div class="flow-copy-block"><p>O bloco remoto soma ASN públicos do provedor. O bloco de CDN local classificado depende de homologação explícita. O bloco compartilhado mostra o restante da malha local que ainda não pode ser atribuído com segurança ao provedor.</p><p>Arquivo esperado: <strong>' . htmlspecialchars(flow_dashboard_local_profiles_path()) . '</strong></p></div>',
+    '<div class="flow-copy-block"><p>O bloco remoto soma ASN publicos do provedor e o bloco local depende de homologacao explicita.</p><p>Arquivo esperado: <strong>' . htmlspecialchars(flow_dashboard_local_profiles_path()) . '</strong></p></div>',
     'fa-check-circle'
 );
 echo '</div>';
@@ -541,3 +541,4 @@ echo '</div>';
 echo '</div>';
 
 flow_render_shell_end();
+

@@ -282,8 +282,9 @@ sub flush_flow_cache {
 		$dbh->commit;
 	};
 	if ($@) {
+		my $flush_err = $@;
 		eval { $dbh->rollback; };
-		warn "Flow query DB flush skipped: $@";
+		warn "Flow query DB flush skipped: $flush_err";
 	}
 	$dbh->disconnect;
 }
@@ -594,13 +595,46 @@ sub cache_flow_record {
 		$dbh->commit;
 	};
 	if ($@) {
+		my $flush_err = $@;
 		eval { $dbh->rollback; };
-		warn "Flow query DB flush skipped: $@";
+		warn "Flow query DB flush skipped: $flush_err";
 	}
 	$dbh->disconnect;
 }
 """,
     )
+
+    # Preserve real flush error message even after rollback attempts.
+    text = replace_all(
+        text,
+        """	if ($@) {
+		eval { $dbh->rollback; };
+		warn "Flow query DB flush skipped: $@";
+	}
+""",
+        """	if ($@) {
+		my $flush_err = $@;
+		eval { $dbh->rollback; };
+		warn "Flow query DB flush skipped: $flush_err";
+	}
+""",
+    )
+
+    # Guard against duplicated declaration block when patch is applied repeatedly.
+    decl_block = (
+        "my $childrunning = 0;\n"
+        "my $flowdbpath;\n"
+        "my $flowdb_backend = $ENV{'ASSTATS_FLOW_BACKEND'} || 'sqlite';\n"
+        "my $flowdb_dsn = $ENV{'ASSTATS_FLOW_DSN'} || '';\n"
+        "my $flowdb_user = $ENV{'ASSTATS_FLOW_USER'} || '';\n"
+        "my $flowdb_password = $ENV{'ASSTATS_FLOW_PASSWORD'} || '';\n"
+        "my $flowdb_retention_days = $ENV{'ASSTATS_FLOW_RETENTION_DAYS'} || 14;\n"
+        "my $flowcache = {};\n"
+        "my $flowcache_lastcleanup = time;\n"
+        "my $flowcache_cleanup_due = 0;\n"
+    )
+    while decl_block + decl_block in text:
+        text = text.replace(decl_block + decl_block, decl_block, 1)
 
     target.write_text(text, encoding="utf-8")
 

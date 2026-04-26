@@ -745,9 +745,9 @@ body[data-theme="light"] .flow-log-console {
 
 .flow-as-row {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
-  gap: 18px;
-  padding: 18px;
+  grid-template-columns: minmax(220px, 248px) minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px;
   border: 1px solid rgba(77, 212, 255, 0.10);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.02);
@@ -759,7 +759,7 @@ body[data-theme="light"] .flow-log-console {
 
 .flow-rank {
   display: inline-flex;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   color: var(--flow-accent);
   font-size: 24px;
   font-weight: 800;
@@ -768,21 +768,22 @@ body[data-theme="light"] .flow-log-console {
 .flow-as-title {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
+  gap: 8px;
+  margin-bottom: 6px;
   font-size: 18px;
 }
 
 .flow-as-meta p {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   color: var(--flow-muted);
+  line-height: 1.35;
 }
 
 .flow-quick-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 0 0 12px;
+  gap: 6px;
+  margin: 0 0 8px;
 }
 
 .flow-quick-link {
@@ -808,22 +809,22 @@ body[data-theme="light"] .flow-log-console {
 .flow-micro-metrics {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .flow-micro-metrics span {
-  padding: 6px 10px;
+  padding: 5px 9px;
   border-radius: 999px;
   background: rgba(77, 212, 255, 0.08);
   color: var(--flow-muted);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .flow-as-graphs,
 .flow-graph-pair {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 10px;
 }
 
 .flow-kpi-strip {
@@ -856,12 +857,19 @@ body[data-theme="light"] .flow-log-console {
 }
 
 .flow-graph-card {
-  padding: 12px;
+  padding: 10px;
   border: 1px solid rgba(77, 212, 255, 0.12);
   border-radius: 18px;
   background:
     radial-gradient(circle at top left, rgba(77, 212, 255, 0.10), transparent 32%),
     linear-gradient(180deg, rgba(4, 12, 22, 0.96), rgba(8, 18, 34, 0.88));
+}
+
+@media (max-width: 1200px) {
+  .flow-as-row {
+    grid-template-columns: minmax(200px, 228px) minmax(0, 1fr);
+    gap: 10px;
+  }
 }
 
 .flow-graph-card img {
@@ -1142,6 +1150,19 @@ body[data-theme="light"] .flow-graph-stat-kpi {
   display: grid;
   grid-template-columns: repeat(3, minmax(240px, 1fr));
   gap: 14px;
+}
+
+/* Dashboard compacto: reduz poluicao visual sem perder leitura operacional. */
+.flow-provider-split .flow-provider-slice:nth-child(3) {
+  display: none;
+}
+
+.flow-provider-split {
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
+}
+
+.flow-provider-note + .flow-provider-note {
+  display: none;
 }
 
 .flow-provider-slice {

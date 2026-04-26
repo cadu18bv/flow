@@ -106,7 +106,7 @@ function flow_ddos_metric_strip($items) {
 function flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit) {
     $sql = "
         SELECT
-            dst_ip AS ip,
+            COALESCE(NULLIF(dst_ip, ''), '0.0.0.0') AS ip,
             MAX(dst_asn) AS asn,
             COUNT(DISTINCT src_ip) AS unique_sources,
             COUNT(DISTINCT src_asn) AS unique_source_asns,
@@ -119,7 +119,7 @@ function flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit) {
         WHERE minute_ts >= :start
           " . flow_ddos_link_clause($selectedLinks, 'target_link_') . "
         GROUP BY dst_ip
-        HAVING SUM(bytes) > 0
+        HAVING SUM(bytes) > 0 OR SUM(samples) > 0
         ORDER BY unique_sources DESC, total_samples DESC, total_bytes DESC
         LIMIT :limit
     ";
@@ -149,7 +149,7 @@ function flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit) {
 function flow_ddos_query_attackers($db, $windowStart, $selectedLinks, $limit) {
     $sql = "
         SELECT
-            src_ip AS ip,
+            COALESCE(NULLIF(src_ip, ''), '0.0.0.0') AS ip,
             MAX(src_asn) AS asn,
             COUNT(DISTINCT dst_ip) AS unique_targets,
             COUNT(DISTINCT link_tag) AS links,
@@ -161,7 +161,7 @@ function flow_ddos_query_attackers($db, $windowStart, $selectedLinks, $limit) {
         WHERE minute_ts >= :start
           " . flow_ddos_link_clause($selectedLinks, 'attacker_link_') . "
         GROUP BY src_ip
-        HAVING SUM(bytes) > 0
+        HAVING SUM(bytes) > 0 OR SUM(samples) > 0
         ORDER BY unique_targets DESC, total_samples DESC, total_bytes DESC
         LIMIT :limit
     ";
@@ -193,7 +193,7 @@ function flow_ddos_query_bursts($db, $windowStart, $selectedLinks, $limit) {
         SELECT
             minute_ts,
             link_tag,
-            dst_ip,
+            COALESCE(NULLIF(dst_ip, ''), '0.0.0.0') AS dst_ip,
             MAX(dst_asn) AS dst_asn,
             COUNT(DISTINCT src_ip) AS unique_sources,
             SUM(bytes) AS total_bytes,
@@ -202,7 +202,7 @@ function flow_ddos_query_bursts($db, $windowStart, $selectedLinks, $limit) {
         WHERE minute_ts >= :start
           " . flow_ddos_link_clause($selectedLinks, 'burst_link_') . "
         GROUP BY minute_ts, link_tag, dst_ip
-        HAVING SUM(bytes) > 0
+        HAVING SUM(bytes) > 0 OR SUM(samples) > 0
         ORDER BY total_samples DESC, total_bytes DESC
         LIMIT :limit
     ";

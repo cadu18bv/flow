@@ -80,13 +80,33 @@ function flow_bgp_he_state_name($code) {
 function flow_bgp_he_exchange_entries_from_html($html) {
     $entries = array();
 
-    if (preg_match_all('#href="(?:https?://(?:ipv4\.)?bgp\.he\.net)?/exchange/([^"/?#]+)"[^>]*>([^<]+)</a>#i', $html, $matches, PREG_SET_ORDER)) {
+    if (preg_match_all('#href=[\'"](?:https?://(?:ipv4\.)?bgp\.he\.net)?/exchange/([^\'"?#<> ]+)[\'"][^>]*>(.*?)</a>#is', $html, $matches, PREG_SET_ORDER)) {
         foreach ($matches as $match) {
             $slug = trim(html_entity_decode($match[1], ENT_QUOTES, 'UTF-8'));
             $name = trim(html_entity_decode(strip_tags($match[2]), ENT_QUOTES, 'UTF-8'));
             if ($slug === '' || $name === '') {
                 continue;
             }
+            $entries[$slug] = array(
+                'id' => 'bgphe:' . $slug,
+                'slug' => $slug,
+                'name' => $name,
+                'source' => 'bgp.he',
+            );
+        }
+    }
+
+    if (!empty($entries)) {
+        return $entries;
+    }
+
+    if (preg_match_all('#/exchange/([A-Za-z0-9._:-]+)#', $html, $slugMatches)) {
+        foreach (array_unique($slugMatches[1]) as $slug) {
+            $slug = trim((string)$slug);
+            if ($slug === '') {
+                continue;
+            }
+            $name = str_replace('-', ' ', $slug);
             $entries[$slug] = array(
                 'id' => 'bgphe:' . $slug,
                 'slug' => $slug,
@@ -109,7 +129,11 @@ function flow_bgp_he_exchange_entries_from_html($html) {
                     if ($name === '') {
                         continue;
                     }
-                    $slug = $name;
+                    $slug = preg_replace('/[^A-Za-z0-9._:-]+/', '-', $name);
+                    $slug = trim((string)$slug, '-');
+                    if ($slug === '') {
+                        continue;
+                    }
                     $entries[$slug] = array(
                         'id' => 'bgphe:' . $slug,
                         'slug' => $slug,
@@ -190,7 +214,7 @@ function flow_bgp_he_exchange_members($slug) {
     }
 
     $members = array();
-    if (preg_match_all('#href="/AS([0-9]+)"#i', $html, $matches)) {
+    if (preg_match_all('#href=[\'"](?:https?://(?:ipv4\.)?bgp\.he\.net)?/AS([0-9]+)[\'"]#i', $html, $matches)) {
         foreach ($matches[1] as $asn) {
             $asn = (int)$asn;
             if ($asn > 0) {
@@ -289,6 +313,9 @@ foreach ($knownlinks as $link) {
 if ($query_asn) {
     $list_ix = flow_build_ix_catalog($query_asn, $peerdb);
     if (!empty($list_ix)) {
+        if ($ix_key === '') {
+            $ix_key = $list_ix[0]['id'];
+        }
         $ixStatus = 'catalogado';
         $select_ix .= '<form method="get" class="flow-form-stack">';
         foreach ($selected_links as $tag) {

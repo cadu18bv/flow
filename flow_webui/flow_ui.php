@@ -36,7 +36,6 @@ function flow_render_shell_start($title, $active = 'overview') {
     $activeNoc = flow_active_class($active, 'noc');
     $activeHistory = flow_active_class($active, 'history');
     $activeIp = flow_active_class($active, 'ipsearch');
-    $activeAsset = flow_active_class($active, 'asset');
     $activeIx = flow_active_class($active, 'ix');
     $activeLinks = flow_active_class($active, 'links');
     $activeConfig = flow_active_class($active, 'config');
@@ -81,7 +80,6 @@ function flow_render_shell_start($title, $active = 'overview') {
         <a class="{$activeNoc}" href="noc.php">NOC</a>
         <a class="{$activeHistory}" href="history.php">ASN Explorer</a>
         <a class="{$activeIp}" href="ipsearch.php">IP Lens</a>
-        <a class="{$activeAsset}" href="asset.php">AS-SET Studio</a>
         <a class="{$activeIx}" href="ix.php">IX Analytics</a>
         <a class="{$activeLinks}" href="linkusage.php">Link Flow</a>
         {$configLink}

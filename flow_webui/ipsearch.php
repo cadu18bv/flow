@@ -98,8 +98,7 @@ function flow_render_mode_switch($current) {
     $html = '<div class="flow-mode-switch" role="radiogroup" aria-label="Modo da consulta">';
     foreach ($options as $value => $label) {
         $checked = ($current === $value) ? ' checked' : '';
-        $active = ($current === $value) ? ' is-active' : '';
-        $html .= '<label class="flow-mode-chip' . $active . '">';
+        $html .= '<label class="flow-mode-chip">';
         $html .= '<input type="radio" name="mode" value="' . htmlspecialchars($value) . '"' . $checked . '>';
         $html .= '<span>' . htmlspecialchars($label) . '</span>';
         $html .= '</label>';
@@ -550,6 +549,7 @@ $queryLink = isset($_GET['link']) ? trim($_GET['link']) : '';
 $queryAsn = isset($_GET['asn']) ? trim($_GET['asn']) : '';
 $queryHours = isset($_GET['hours']) ? (int)$_GET['hours'] : 24;
 $exportPdf = isset($_GET['export']) && $_GET['export'] === 'pdf';
+$queryMode = in_array($queryMode, array('any', 'src', 'dst'), true) ? $queryMode : 'any';
 $queryHours = array_key_exists($queryHours, flow_query_hours_options()) ? $queryHours : 24;
 $dbPath = flow_query_db_path();
 $dbReady = flow_events_available();
@@ -829,4 +829,5 @@ echo flow_render_panel('Eventos recentes', $recentEventsHtml, 'fa-table');
 echo '</div>';
 echo '</div>';
 
+echo '<script>(function(){var chips=document.querySelectorAll(".flow-mode-chip");if(!chips.length){return;}function sync(){chips.forEach(function(chip){var radio=chip.querySelector("input[type=radio]");if(!radio){return;}chip.classList.toggle("is-active",!!radio.checked);});}chips.forEach(function(chip){var radio=chip.querySelector("input[type=radio]");if(!radio){return;}radio.addEventListener("change",sync);chip.addEventListener("click",function(){if(!radio.checked){radio.checked=true;}sync();});});sync();})();</script>';
 flow_render_shell_end();

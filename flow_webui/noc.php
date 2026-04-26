@@ -219,7 +219,7 @@ function flow_noc_geolocate_ip($ip, &$cache) {
 function flow_noc_query_remote_ips($db, $windowStart, $selectedLinks, $limit) {
     $sql = "
         SELECT
-            CASE WHEN lower(direction) = 'out' THEN dst_ip ELSE src_ip END AS remote_ip,
+            COALESCE(NULLIF(CASE WHEN lower(direction) = 'out' THEN dst_ip ELSE src_ip END, ''), '0.0.0.0') AS remote_ip,
             MAX(CASE WHEN lower(direction) = 'out' THEN dst_asn ELSE src_asn END) AS remote_asn,
             COUNT(*) AS events,
             COUNT(DISTINCT CASE WHEN lower(direction) = 'out' THEN src_ip ELSE dst_ip END) AS local_ips,
@@ -231,7 +231,7 @@ function flow_noc_query_remote_ips($db, $windowStart, $selectedLinks, $limit) {
         WHERE minute_ts >= :start
           " . flow_noc_link_clause($selectedLinks, 'remote_link_') . "
         GROUP BY remote_ip
-        HAVING SUM(bytes) > 0
+        HAVING SUM(bytes) > 0 OR SUM(samples) > 0
         ORDER BY total_bytes DESC, total_samples DESC
         LIMIT :limit
     ";
