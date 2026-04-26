@@ -87,15 +87,17 @@ prompt_action() {
   printf "  1) Instalar ou atualizar o Flow Observatory completo\n"
   printf "  2) Aplicar tema, corretivas e recursos flow em uma instalacao existente\n"
   printf "  3) Adicionar mais um roteador/exportador no flow\n"
+  printf "  4) Update completo (pacotes + collector + webui + tema + servicos)\n"
   printf "\n"
-  read -r -p "Opcao [1/2/3]: " selected_action
+  read -r -p "Opcao [1/2/3/4]: " selected_action
 
   case "${selected_action:-1}" in
     1) ASSTATS_ACTION="install" ;;
     2) ASSTATS_ACTION="theme" ;;
     3) ASSTATS_ACTION="add-router" ;;
+    4) ASSTATS_ACTION="update-all" ;;
     *)
-      fail "Opcao invalida. Use 1, 2 ou 3."
+      fail "Opcao invalida. Use 1, 2, 3 ou 4."
       ;;
   esac
 }
@@ -442,6 +444,29 @@ run_add_router() {
   [[ -d "${PROJECT_DIR}" ]] || fail "Projeto nao encontrado em ${PROJECT_DIR}"
   install_router_management_tool
   /usr/local/bin/asstats-add-router.sh "${PROJECT_DIR}"
+}
+
+run_update_all() {
+  info "Executando update completo do Flow Observatory"
+  detect_ubuntu
+  preflight
+  prompt_customer_asn
+  prompt_timezone
+  prompt_flow_database_backend
+
+  configure_repos
+  install_packages
+  install_perl_modules
+  configure_postgres_flow_db
+  install_project
+  configure_web
+  run_theme_upgrade
+  install_systemd_units
+  install_router_management_tool
+  install_maintenance_helper
+  run_correctives
+  verify_installation
+  show_summary
 }
 
 detect_ubuntu() {
@@ -2008,6 +2033,10 @@ main() {
       ;;
     add-router)
       run_add_router
+      return
+      ;;
+    update-all)
+      run_update_all
       return
       ;;
     install)
