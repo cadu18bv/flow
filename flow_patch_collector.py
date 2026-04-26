@@ -251,8 +251,8 @@ sub flush_flow_cache {
 				flow_type
 			)
 			DO UPDATE SET
-				bytes = bytes + excluded.bytes,
-				samples = samples + excluded.samples,
+				bytes = flow_events.bytes + excluded.bytes,
+				samples = flow_events.samples + excluded.samples,
 				updated_at = excluded.updated_at
 		});
 
@@ -631,6 +631,18 @@ sub cache_flow_record {
 		warn "Flow query DB flush skipped: $flush_err";
 	}
 """,
+    )
+
+    # PostgreSQL: avoid ambiguous column references inside UPSERT update.
+    text = replace_all(
+        text,
+        "bytes = bytes + excluded.bytes,\n\t\t\t\tsamples = samples + excluded.samples,",
+        "bytes = flow_events.bytes + excluded.bytes,\n\t\t\t\tsamples = flow_events.samples + excluded.samples,",
+    )
+    text = replace_all(
+        text,
+        "bytes = bytes + excluded.bytes,\n\t\t\t\tsamples = samples + excluded.samples,\n\t\t\t\tupdated_at = excluded.updated_at",
+        "bytes = flow_events.bytes + excluded.bytes,\n\t\t\t\tsamples = flow_events.samples + excluded.samples,\n\t\t\t\tupdated_at = excluded.updated_at",
     )
 
     # Normalize and deduplicate flow DB globals (prevents "my variable masks earlier declaration").
