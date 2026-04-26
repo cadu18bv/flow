@@ -420,12 +420,22 @@ sub flush_flow_cache {
         "\t\thandleflow($routerip, $noctets, $srcas, 0, $snmpin, $snmpout, $ipversion, $type, $vlanin, $vlanout, $peeras, $srcip, $dstip);\n\t\thandleflow($routerip, $noctets,\t0, $dstas, $snmpin, $snmpout, $ipversion, $type, $vlanin, $vlanout, $peeras, $srcip, $dstip);\n",
         "handleflow recursion",
     )
-    text = replace_once(
-        text,
-        "\tif (!$ifalias) {\n\t\t# ignore this, as it's through an interface we don't monitor\n\t\treturn;\n\t}\n\t\n\tmy $dsname;\n",
-        "\tif (!$ifalias) {\n\t\t# ignore this, as it's through an interface we don't monitor\n\t\treturn;\n\t}\n\t\n\tcache_flow_record($routerip, $ifalias, $direction, $ipversion, $srcip, $dstip, $srcas, $dstas, $type, $noctets);\n\t\n\tmy $dsname;\n",
-        "flow cache hook",
-    )
+    if "cache_flow_record($routerip, $ifalias, $direction" not in text:
+        hook_pattern = (
+            r"(\tif \(!\$ifalias\) \{\n"
+            r"\t\t# ignore this, as it's through an interface we don't monitor\n"
+            r"\t\treturn;\n"
+            r"\t\}\n)"
+            r"(\s*\n\tmy \$dsname;\n)"
+        )
+        hook_replacement = (
+            r"\1"
+            "\n\tcache_flow_record($routerip, $ifalias, $direction, $ipversion, $srcip, $dstip, $srcas, $dstas, $type, $noctets);\n"
+            r"\2"
+        )
+        text, hook_count = re.subn(hook_pattern, hook_replacement, text, count=1)
+        if hook_count == 0:
+            print("Patch notice: flow cache hook not found; assuming collector already differs and continuing.", file=sys.stderr)
 
     text = replace_once(
         text,

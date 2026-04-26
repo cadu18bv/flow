@@ -328,6 +328,22 @@ function flow_ixbr_exchange_members_by_name($ixName, &$resolvedLabel = '') {
     }
 
     $resolvedLabel = isset($catalog[$slug]) ? $catalog[$slug]['label'] : strtoupper($slug);
+    return flow_ixbr_exchange_members_by_slug($slug, $resolvedLabel);
+}
+
+function flow_ixbr_exchange_members_by_slug($slug, &$resolvedLabel = '') {
+    $slug = strtolower(trim((string)$slug));
+    if ($slug === '') {
+        return array();
+    }
+
+    $catalog = flow_ixbr_slug_catalog();
+    if (isset($catalog[$slug])) {
+        $resolvedLabel = $catalog[$slug]['label'];
+    } elseif ($resolvedLabel === '') {
+        $resolvedLabel = strtoupper($slug);
+    }
+
     $html = flow_http_fetch('https://ix.br/particip/' . rawurlencode($slug));
     if ($html === '') {
         return array();
@@ -361,12 +377,17 @@ function flow_ixbr_exchange_members_by_name($ixName, &$resolvedLabel = '') {
 function flow_build_ix_catalog($myAsn, $peerdb) {
     $catalog = array();
 
-    $bgpHeEntries = flow_bgp_he_exchange_catalog($myAsn);
-    foreach ($bgpHeEntries as $entry) {
-        $catalog[$entry['id']] = $entry;
+    $ixbrEntries = flow_ixbr_slug_catalog();
+    foreach ($ixbrEntries as $slug => $entry) {
+        $catalog['ixbr:' . $slug] = array(
+            'id' => 'ixbr:' . $slug,
+            'slug' => $slug,
+            'name' => $entry['label'],
+            'source' => 'IX.br',
+        );
     }
 
-    if ($peerdb) {
+    if ($peerdb && (int)$myAsn > 0) {
         $peerdbEntries = $peerdb->GetIX($myAsn);
         if (!empty($peerdbEntries)) {
             foreach ($peerdbEntries as $entry) {
@@ -396,18 +417,23 @@ function flow_ix_members($ixKey, $peerdb, $ixName = '') {
         return array(array(), 'indefinido');
     }
 
-    if (strpos($ixKey, 'bgphe:') === 0) {
-        $members = flow_bgp_he_exchange_members(substr($ixKey, 6));
+    if (strpos($ixKey, 'ixbr:') === 0) {
+        $ixbrLabel = '';
+        $members = flow_ixbr_exchange_members_by_slug(substr($ixKey, 5), $ixbrLabel);
         if (!empty($members)) {
-            return array($members, 'bgp.he');
+            return array($members, 'IX.br' . ($ixbrLabel !== '' ? ' (' . $ixbrLabel . ')' : ''));
         }
+        return array(array(), 'IX.br (sem membros)');
+    }
 
+    if (strpos($ixKey, 'bgphe:') === 0) {
         $ixbrLabel = '';
         $ixbrMembers = flow_ixbr_exchange_members_by_name($ixName, $ixbrLabel);
         if (!empty($ixbrMembers)) {
-            return array($ixbrMembers, 'ix.br/particip' . ($ixbrLabel !== '' ? ' (' . $ixbrLabel . ')' : ''));
+            return array($ixbrMembers, 'IX.br' . ($ixbrLabel !== '' ? ' (' . $ixbrLabel . ')' : ''));
         }
-        return array(array(), 'bgp.he (sem membros)');
+
+        return array(array(), 'IX.br (sem correspondencia)');
     }
 
     if (strpos($ixKey, 'pdb:') === 0 && $peerdb) {
@@ -448,7 +474,7 @@ $ixStatus = 'nao-configurado';
 $ixPanelTitle = 'Nenhum IX carregado';
 $ixEmptyTitle = 'Aguardando selecao';
 $ixEmptyBody = 'Escolha um IX para montar o ranking de trafego por ASN.';
-$ixSource = 'bgp.he';
+$ixSource = 'IX.br';
 
 foreach ($knownlinks as $link) {
     if (isset($_GET["link_{$link['tag']}"])) {
@@ -484,17 +510,17 @@ if ($query_asn) {
         }
         $select_ix .= '</select>';
         $select_ix .= '<button class="flow-button" type="submit">Carregar IX</button>';
-        $select_ix .= '<span class="flow-search-hint">Catalogo priorizado por bgp.he com complemento de PeeringDB quando disponivel.</span>';
+        $select_ix .= '<span class="flow-search-hint">Catalogo priorizado por IX.br, com complemento de PeeringDB quando disponivel.</span>';
         $select_ix .= '</form>';
     } else {
         $ixStatus = 'sem-ix';
         $select_ix = flow_render_empty_state(
             'Nenhum IX encontrado para o ASN local',
-            'Revise o ASN consultado e confirme se esse sistema autonomo possui presenca visivel no bgp.he.'
+            'Revise o ASN consultado e confirme se esse sistema autonomo possui presenca no IX.br ou no PeeringDB.'
         );
         $ixPanelTitle = 'ASN sem IX vinculado';
         $ixEmptyTitle = 'Sem IX para o ASN informado';
-        $ixEmptyBody = 'A consulta de IX depende do ASN local configurado e da visibilidade desse ASN no bgp.he.';
+        $ixEmptyBody = 'A consulta de IX depende do ASN local configurado e da visibilidade desse ASN nas fontes oficiais.';
     }
 } else {
     $select_ix = flow_render_empty_state(
@@ -529,7 +555,7 @@ if ($ix_key !== '') {
     } else {
         $ixPanelTitle = 'IX sem membros retornados';
         $ixEmptyTitle = 'Fonte sem resposta util';
-        $ixEmptyBody = 'O IX foi selecionado, mas a consulta de membros nao retornou ASN para montar o ranking. Fontes testadas: bgp.he e fallback ix.br/particip.';
+        $ixEmptyBody = 'O IX foi selecionado, mas a consulta de membros nao retornou ASN para montar o ranking. Fontes testadas: IX.br e PeeringDB.';
     }
 }
 
@@ -542,7 +568,7 @@ $heroStats = array(
 );
 
 flow_render_shell_start('Flow | IX Analytics', 'ix');
-echo flow_render_hero('ix analytics', 'Painel de IX', 'Visualizacao dedicada para ranking de ASN dentro do IX selecionado, usando catalogo e membros priorizados por bgp.he.', $heroStats);
+echo flow_render_hero('ix analytics', 'Painel de IX', 'Visualizacao dedicada para ranking de ASN dentro do IX selecionado, usando catalogo e membros priorizados por IX.br.', $heroStats);
 
 echo '<div class="flow-grid">';
 echo '<div class="flow-stack">';
