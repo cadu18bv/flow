@@ -37,6 +37,7 @@ ASSTATS_TIMEZONE="${ASSTATS_TIMEZONE:-}"
 ASSTATS_MASTER_USER="${ASSTATS_MASTER_USER:-cecti}"
 ASSTATS_MASTER_PASSWORD="${ASSTATS_MASTER_PASSWORD:-kolx2yksu}"
 ASSTATS_ACTION="${ASSTATS_ACTION:-}"
+ASSTATS_WEB_SERVER="${ASSTATS_WEB_SERVER:-nginx}"
 RAW_WALK_FILE=""
 
 info() {
@@ -88,18 +89,72 @@ prompt_action() {
   printf "  2) Aplicar tema, corretivas e recursos flow em uma instalacao existente\n"
   printf "  3) Adicionar mais um roteador/exportador no flow\n"
   printf "  4) Update completo (pacotes + collector + webui + tema + servicos)\n"
+  printf "  5) Reinstalar tudo (backup + limpeza + instalacao completa)\n"
+  printf "  6) Converter web stack para Nginx (mantendo dados atuais)\n"
   printf "\n"
-  read -r -p "Opcao [1/2/3/4]: " selected_action
+  read -r -p "Opcao [1/2/3/4/5/6]: " selected_action
 
   case "${selected_action:-1}" in
     1) ASSTATS_ACTION="install" ;;
     2) ASSTATS_ACTION="theme" ;;
     3) ASSTATS_ACTION="add-router" ;;
     4) ASSTATS_ACTION="update-all" ;;
+    5) ASSTATS_ACTION="reinstall" ;;
+    6) ASSTATS_ACTION="convert-nginx" ;;
     *)
-      fail "Opcao invalida. Use 1, 2, 3 ou 4."
+      fail "Opcao invalida. Use 1, 2, 3, 4, 5 ou 6."
       ;;
   esac
+}
+
+backup_existing_installation() {
+  local backup_root backup_file
+  backup_root="/var/backups/flow-observatory"
+  mkdir -p "${backup_root}"
+  backup_file="${backup_root}/flow-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+
+  info "Gerando backup da instalacao atual em ${backup_file}"
+  tar -czf "${backup_file}" \
+    /data/asstats \
+    /etc/default/asstats \
+    /etc/systemd/system/asstatsd.service \
+    /etc/systemd/system/asstats-extract.service \
+    /etc/systemd/system/asstats-extract.timer \
+    /etc/nginx/sites-available/flow-observatory.conf \
+    /etc/nginx/sites-enabled/flow-observatory.conf \
+    /etc/apache2/conf-available/flow-observatory.conf \
+    /etc/apache2/conf-enabled/flow-observatory.conf \
+    /usr/local/bin/asstats-add-router.sh \
+    /usr/local/bin/flow-maintenance-helper.sh \
+    /etc/sudoers.d/flow-maintenance-www-data \
+    2>/dev/null || true
+
+  info "Backup concluido: ${backup_file}"
+}
+
+purge_existing_installation() {
+  info "Parando servicos da instalacao atual"
+  systemctl stop asstatsd.service 2>/dev/null || true
+  systemctl stop asstats-extract.timer 2>/dev/null || true
+  systemctl stop asstats-extract.service 2>/dev/null || true
+
+  info "Removendo estrutura atual do projeto em ${PROJECT_DIR}"
+  rm -rf "${PROJECT_DIR}"
+
+  rm -f /etc/systemd/system/asstatsd.service
+  rm -f /etc/systemd/system/asstats-extract.service
+  rm -f /etc/systemd/system/asstats-extract.timer
+  rm -f /etc/nginx/sites-available/flow-observatory.conf
+  rm -f /etc/nginx/sites-enabled/flow-observatory.conf
+  rm -f /usr/local/bin/asstats-add-router.sh
+  rm -f /usr/local/bin/flow-maintenance-helper.sh
+  rm -f /etc/sudoers.d/flow-maintenance-www-data
+
+  a2disconf flow-observatory >/dev/null 2>&1 || true
+  rm -f /etc/apache2/conf-available/flow-observatory.conf
+  rm -f /etc/apache2/conf-enabled/flow-observatory.conf
+
+  systemctl daemon-reload
 }
 
 detect_current_timezone() {
@@ -273,7 +328,7 @@ apply_timezone() {
     ln -snf "/usr/share/zoneinfo/${ASSTATS_TIMEZONE}" /etc/localtime
   fi
 
-  for timezone_dir in /etc/php/*/apache2/conf.d /etc/php/*/cli/conf.d; do
+  for timezone_dir in /etc/php/*/fpm/conf.d /etc/php/*/cli/conf.d /etc/php/*/apache2/conf.d; do
     [[ -d "${timezone_dir}" ]] || continue
     php_timezone_file="${timezone_dir}/99-flow-timezone.ini"
     cat > "${php_timezone_file}" <<EOF
@@ -282,6 +337,13 @@ date.timezone = ${ASSTATS_TIMEZONE}
 EOF
   done
 
+  local fpm_service
+  for fpm_service in /etc/php/*/fpm; do
+    [[ -d "${fpm_service}" ]] || continue
+    service_name="$(basename "$(dirname "${fpm_service}")")-fpm.service"
+    systemctl restart "${service_name}" >/dev/null 2>&1 || true
+  done
+  systemctl restart nginx >/dev/null 2>&1 || true
   systemctl restart apache2 >/dev/null 2>&1 || true
 }
 
@@ -310,67 +372,99 @@ prepare_runtime_security_layout() {
   chmod 0660 "${FLOW_AUTH_DB}" 2>/dev/null || true
 }
 
-configure_apache_flow_site() {
-  local apache_conf
-  apache_conf="/etc/apache2/conf-available/flow-observatory.conf"
+detect_php_fpm_socket() {
+  local socket_path
+  socket_path="$(find /run/php -maxdepth 1 -type s -name 'php*-fpm.sock' 2>/dev/null | sort -V | tail -n 1 || true)"
+  if [[ -n "${socket_path}" ]]; then
+    printf '%s' "${socket_path}"
+    return 0
+  fi
 
-  info "Aplicando endurecimento do Apache e publicacao por alias"
+  if systemctl list-unit-files 'php*-fpm.service' --no-legend 2>/dev/null | awk 'NR==1{exit 0} END{exit 1}'; then
+    local fpm_service
+    fpm_service="$(systemctl list-unit-files 'php*-fpm.service' --no-legend 2>/dev/null | awk 'NR==1 {print $1}')"
+    [[ -n "${fpm_service}" ]] && systemctl enable --now "${fpm_service}" >/dev/null 2>&1 || true
+    socket_path="$(find /run/php -maxdepth 1 -type s -name 'php*-fpm.sock' 2>/dev/null | sort -V | tail -n 1 || true)"
+  fi
+
+  printf '%s' "${socket_path}"
+}
+
+disable_apache_flow_site() {
+  if command -v a2disconf >/dev/null 2>&1; then
+    a2disconf flow-observatory >/dev/null 2>&1 || true
+  fi
+  rm -f /etc/apache2/conf-available/flow-observatory.conf
+  rm -f /etc/apache2/conf-enabled/flow-observatory.conf
+  systemctl disable --now apache2 >/dev/null 2>&1 || true
+}
+
+configure_nginx_flow_site() {
+  local nginx_site php_fpm_socket
+  nginx_site="/etc/nginx/sites-available/flow-observatory.conf"
+  php_fpm_socket="$(detect_php_fpm_socket)"
+  [[ -n "${php_fpm_socket}" ]] || fail "Nao encontrei socket php-fpm ativo em /run/php"
+
+  info "Aplicando endurecimento do Nginx e publicacao por alias /${ASSTATS_WEB_ALIAS}"
   mkdir -p /var/www/html
 
-  cat > "${apache_conf}" <<EOF
+  cat > "${nginx_site}" <<EOF
 # Managed by Flow Observatory installer
-ServerTokens Prod
-ServerSignature Off
-TraceEnable Off
-FileETag None
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    server_tokens off;
 
-Alias /${ASSTATS_WEB_ALIAS} ${PROJECT_DIR}/www
-Alias /${ASSTATS_WEB_ALIAS}/ ${PROJECT_DIR}/www/
+    root /var/www/html;
+    index index.php index.html;
 
-<Directory "${PROJECT_DIR}/www">
-    Options -Indexes +FollowSymLinks
-    AllowOverride None
-    Require all granted
-    DirectoryIndex login.php index.php
-</Directory>
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
 
-<Directory "${PROJECT_DIR}/runtime">
-    Require all denied
-</Directory>
+    access_log /var/log/nginx/flow_access.log;
+    error_log /var/log/nginx/flow_error.log warn;
 
-<Directory "${PROJECT_DIR}/conf">
-    Require all denied
-</Directory>
+    location = / {
+        return 302 /${ASSTATS_WEB_ALIAS}/;
+    }
 
-<Directory "${PROJECT_DIR}/asstats">
-    Require all denied
-</Directory>
+    location = /${ASSTATS_WEB_ALIAS} {
+        return 301 /${ASSTATS_WEB_ALIAS}/;
+    }
 
-<Directory "${PROJECT_DIR}/bin">
-    Require all denied
-</Directory>
+    location /${ASSTATS_WEB_ALIAS}/ {
+        alias ${PROJECT_DIR}/www/;
+        index login.php index.php;
+        try_files \$uri \$uri/ /${ASSTATS_WEB_ALIAS}/index.php?\$query_string;
+    }
 
-<FilesMatch "^(config\\.inc|func\\.inc|auth\\.php|flow_ui\\.php)$">
-    Require all denied
-</FilesMatch>
+    location ~ ^/${ASSTATS_WEB_ALIAS}/(.+\\.php)$ {
+        alias ${PROJECT_DIR}/www/\$1;
+        include snippets/fastcgi-php.conf;
+        fastcgi_param SCRIPT_FILENAME ${PROJECT_DIR}/www/\$1;
+        fastcgi_param DOCUMENT_ROOT ${PROJECT_DIR}/www;
+        fastcgi_param PATH_INFO "";
+        fastcgi_pass unix:${php_fpm_socket};
+    }
 
-<FilesMatch "\\.(db|sqlite|sqlite3|bak|orig|dist|sh|py|pl|log|env|md|ini)$">
-    Require all denied
-</FilesMatch>
+    location ~* ^/${ASSTATS_WEB_ALIAS}/.*\\.(db|sqlite|sqlite3|bak|orig|dist|sh|py|pl|log|env|md|ini)$ {
+        deny all;
+    }
 
-<IfModule mod_headers.c>
-    Header always unset X-Powered-By
-    Header always set X-Frame-Options "SAMEORIGIN"
-    Header always set X-Content-Type-Options "nosniff"
-    Header always set Referrer-Policy "strict-origin-when-cross-origin"
-    Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
-</IfModule>
+    location ~* ^/${ASSTATS_WEB_ALIAS}/(conf/|asstats/|bin/|runtime/) {
+        deny all;
+    }
+}
 EOF
 
-  rm -f "/var/www/html/${ASSTATS_WEB_ALIAS}" || true
-  rm -f "/var/www/html/as-stats" || true
-  a2enmod headers rewrite >/dev/null 2>&1 || true
-  a2enconf flow-observatory >/dev/null 2>&1 || true
+  ln -snf "${nginx_site}" /etc/nginx/sites-enabled/flow-observatory.conf
+  rm -f /etc/nginx/sites-enabled/default
+  nginx -t
+  systemctl enable --now nginx
+  systemctl reload nginx
 }
 
 initialize_auth_database() {
@@ -469,6 +563,53 @@ run_update_all() {
   show_summary
 }
 
+run_convert_to_nginx() {
+  info "Convertendo stack web para Nginx mantendo os dados atuais"
+  [[ -d "${PROJECT_DIR}" ]] || fail "Projeto nao encontrado em ${PROJECT_DIR}"
+
+  detect_ubuntu
+  preflight
+  install_packages
+  apply_timezone
+  configure_web
+  verify_installation
+
+  info "Conversao concluida. Apache foi desativado e Nginx esta ativo."
+  printf "\n[INFO] URL: http://IP_DO_SERVIDOR/%s\n" "${ASSTATS_WEB_ALIAS}"
+}
+
+run_reinstall_full() {
+  info "Executando reinstalacao completa do Flow Observatory"
+  detect_ubuntu
+  preflight
+  prompt_customer_asn
+  prompt_timezone
+  prompt_master_credentials
+  prompt_flow_database_backend
+  backup_existing_installation
+  purge_existing_installation
+
+  configure_repos
+  install_packages
+  apply_timezone
+  install_perl_modules
+  configure_postgres_flow_db
+  install_project
+  configure_snmp
+  configure_web
+  initialize_auth_database
+  ensure_master_user_account
+  configure_knownlinks
+  install_systemd_units
+  install_router_management_tool
+  install_maintenance_helper
+  detect_flow_exporter_ip
+  configure_firewall
+  run_correctives
+  verify_installation
+  show_summary
+}
+
 detect_ubuntu() {
   [[ -r /etc/os-release ]] || fail "Nao foi possivel ler /etc/os-release"
   # shellcheck disable=SC1091
@@ -516,7 +657,7 @@ build_package_lists() {
     libnet-patricia-perl libjson-xs-perl netcat-openbsd python3-requests
     libdbd-sqlite3-perl sqlite3 libdbd-pg-perl postgresql postgresql-client libtrycatch-perl rrdtool librrds-perl librrdp-perl
     librrdtool-oo-perl python3-rrdtool librrd-dev
-    apache2 libapache2-mod-php php php-sqlite3 php-pgsql php-cli php-gmp php-gd
+    nginx php-fpm php php-sqlite3 php-pgsql php-cli php-gmp php-gd
     php-bcmath php-mbstring php-pear php-curl php-xml php-zip libyaml-perl
     snmp snmp-mibs-downloader tcpdump
   )
@@ -562,9 +703,9 @@ run_package_corrective() {
         return 0
       fi
       ;;
-    libapache2-mod-php)
-      if apt-cache show libapache2-mod-php8.3 >/dev/null 2>&1; then
-        PACKAGE_CORRECTIVE_TARGET="libapache2-mod-php8.3"
+    php-fpm)
+      if apt-cache show php8.3-fpm >/dev/null 2>&1; then
+        PACKAGE_CORRECTIVE_TARGET="php8.3-fpm"
         return 0
       fi
       ;;
@@ -1433,8 +1574,12 @@ configure_web() {
   chmod 0660 "${FLOW_AUTH_DB}" || true
   chmod 0755 /data "${PROJECT_DIR}" "${PROJECT_DIR}/conf" "${PROJECT_DIR}/asstats" "${PROJECT_DIR}/www" || true
   chmod 0770 "${RUNTIME_DIR}" || true
-  configure_apache_flow_site
-  systemctl enable --now apache2
+  if [[ "${ASSTATS_WEB_SERVER}" == "nginx" ]]; then
+    configure_nginx_flow_site
+    disable_apache_flow_site
+  else
+    fail "Web server nao suportado: ${ASSTATS_WEB_SERVER}. Use nginx."
+  fi
 }
 
 configure_knownlinks() {
@@ -1455,6 +1600,7 @@ ASSTATS_PROJECT_DIR=${PROJECT_DIR}
 ASSTATS_EXPORTER_HOST=${ASSTATS_EXPORTER_HOST}
 ASSTATS_SNMP_COMMUNITY=${ASSTATS_SNMP_COMMUNITY}
 ASSTATS_SAMPLING_RATE=${ASSTATS_SAMPLING_RATE}
+ASSTATS_WEB_SERVER=${ASSTATS_WEB_SERVER}
 ASSTATS_FLOW_BACKEND=${ASSTATS_FLOW_BACKEND}
 ASSTATS_FLOW_DB=${PROJECT_DIR}/asstats/flow_events.db
 ASSTATS_FLOW_RETENTION_DAYS=${ASSTATS_FLOW_RETENTION_DAYS}
@@ -1819,8 +1965,16 @@ SQL
   tail-extractor-log)
     journalctl -u asstats-extract.service -n 80 --no-pager
     ;;
-  tail-apache-log)
-    tail -n 80 /var/log/apache2/error.log
+  tail-web-log)
+    if [[ -f /var/log/nginx/flow_error.log ]]; then
+      tail -n 80 /var/log/nginx/flow_error.log
+    elif [[ -f /var/log/nginx/error.log ]]; then
+      tail -n 80 /var/log/nginx/error.log
+    elif [[ -f /var/log/apache2/error.log ]]; then
+      tail -n 80 /var/log/apache2/error.log
+    else
+      echo "Nenhum log web encontrado."
+    fi
     ;;
   validate-flow)
     netflow_port="${ASSTATS_PORT_NETFLOW:-9000}"
@@ -1851,7 +2005,7 @@ SQL
     fi
     ;;
   *)
-    echo "Uso: $0 {refresh-collection|knownlinks-write|optimize-flow-db|reset-collection|tail-collector-log|tail-extractor-log|tail-apache-log|validate-flow}" >&2
+    echo "Uso: $0 {refresh-collection|knownlinks-write|optimize-flow-db|reset-collection|tail-collector-log|tail-extractor-log|tail-web-log|validate-flow}" >&2
     exit 1
     ;;
 esac
@@ -1939,7 +2093,7 @@ verify_installation() {
   info "Validando instalacao"
   systemctl is-enabled asstatsd.service >/dev/null
   systemctl is-enabled asstats-extract.timer >/dev/null
-  systemctl is-active apache2 >/dev/null
+  systemctl is-active nginx >/dev/null
 
   if ! systemctl is-active asstatsd.service >/dev/null 2>&1; then
     warn "O servico asstatsd nao subiu. Isso normalmente acontece quando o knownlinks ainda nao foi preenchido corretamente."
@@ -1948,7 +2102,7 @@ verify_installation() {
   [[ -f /etc/default/asstats ]] || fail "Arquivo /etc/default/asstats nao foi criado"
   [[ -f "${PROJECT_DIR}/conf/knownlinks" ]] || fail "knownlinks nao foi criado"
   [[ -d "${PROJECT_DIR}/rrd" ]] || fail "Diretorio RRD nao foi criado"
-  [[ -f /etc/apache2/conf-available/flow-observatory.conf ]] || fail "Configuracao endurecida do Apache nao foi criada"
+  [[ -f /etc/nginx/sites-available/flow-observatory.conf ]] || fail "Configuracao endurecida do Nginx nao foi criada"
   [[ -f "${PROJECT_DIR}/www/plugins/mobile-detect/Mobile_Detect.php" ]] || fail "Dependencia da WebUI ausente: ${PROJECT_DIR}/www/plugins/mobile-detect/Mobile_Detect.php"
   [[ -f "${PROJECT_DIR}/www/config.inc" ]] || fail "Arquivo ${PROJECT_DIR}/www/config.inc nao encontrado"
   [[ -f "${PROJECT_DIR}/www/func.inc" ]] || fail "Arquivo ${PROJECT_DIR}/www/func.inc nao encontrado"
@@ -2000,6 +2154,7 @@ Arquivos importantes:
   /usr/local/bin/asstats-add-router.sh
 
 Servicos:
+  systemctl status nginx
   systemctl status asstatsd.service
   systemctl status asstats-extract.timer
 
@@ -2017,7 +2172,7 @@ Proximos passos:
 
 Comandos uteis:
   journalctl -u asstatsd.service -n 100 --no-pager
-  tail -n 100 /var/log/apache2/error.log
+  tail -n 100 /var/log/nginx/flow_error.log
   sqlite3 ${PROJECT_DIR}/asstats/asstats_day.txt '.tables'
 EOF
 }
@@ -2037,6 +2192,14 @@ main() {
       ;;
     update-all)
       run_update_all
+      return
+      ;;
+    reinstall)
+      run_reinstall_full
+      return
+      ;;
+    convert-nginx)
+      run_convert_to_nginx
       return
       ;;
     install)
