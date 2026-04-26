@@ -1026,11 +1026,13 @@ function flow_render_as_row($rank, $as, $asinfo, $nbytes, $start, $end, $peerusa
     $in6 = isset($nbytes[2]) ? $nbytes[2] : 0;
     $out6 = isset($nbytes[3]) ? $nbytes[3] : 0;
 
-    $graph4 = getHTMLUrl($as, 4, $asinfo['descr'], $start, $end, $peerusage, $selectedLinks);
-    $graph6 = $showv6 ? getHTMLUrl($as, 6, $asinfo['descr'], $start, $end, $peerusage, $selectedLinks) : '';
-    $graph4Stats = flow_fetch_rrd_graph_stats($as, 4, $start, $end, $peerusage, $selectedLinks);
-    $graph6Stats = $showv6 ? flow_fetch_rrd_graph_stats($as, 6, $start, $end, $peerusage, $selectedLinks) : null;
     $hours = max(1, (int)round(($end - $start) / 3600));
+    $series4 = flow_fetch_as_minute_series((int)$as, 4, $hours, $selectedLinks);
+    $series6 = $showv6 ? flow_fetch_as_minute_series((int)$as, 6, $hours, $selectedLinks) : array();
+    $graph4 = flow_render_link_svg_chart($series4, 'as-' . (int)$as . '-v4-' . (int)$rank, 'AS' . (int)$as . ' - IPv4');
+    $graph6 = $showv6 ? flow_render_link_svg_chart($series6, 'as-' . (int)$as . '-v6-' . (int)$rank, 'AS' . (int)$as . ' - IPv6') : '';
+    $graph4Stats = flow_stats_from_minute_series($series4);
+    $graph6Stats = $showv6 ? flow_stats_from_minute_series($series6) : null;
     $drillUrl = flow_build_as_drill_url($as, $hours, $selectedLinks);
     $quickLinks = '';
 
@@ -1114,13 +1116,301 @@ function flow_render_link_legend($stats) {
     return $html;
 }
 
+function flow_fetch_link_minute_series($linkTag, $ipVersion, $hours) {
+    $cachePayload = array(
+        'link' => (string)$linkTag,
+        'ip' => (int)$ipVersion,
+        'hours' => (int)$hours,
+        'backend' => flow_events_backend(),
+    );
+    $cacheHit = false;
+    $cached = flow_cache_get('link_minute_series', $cachePayload, 20, $cacheHit);
+    if ($cacheHit && is_array($cached)) {
+        return $cached;
+    }
+
+    $error = null;
+    $db = flow_events_open_connection($error);
+    if (!$db || !flow_events_has_table($db, 'flow_events')) {
+        if ($db) {
+            $db->close();
+        }
+        return array();
+    }
+
+    $windowStart = time() - (max(1, (int)$hours) * 3600);
+    $samplingFactor = flow_link_sampling_factor($linkTag);
+    $sql = "
+        SELECT
+            minute_ts,
+            SUM(CASE WHEN lower(direction) = 'in' THEN bytes ELSE 0 END) AS in_bytes,
+            SUM(CASE WHEN lower(direction) = 'out' THEN bytes ELSE 0 END) AS out_bytes
+        FROM flow_events
+        WHERE minute_ts >= :start
+          AND link_tag = :link_tag
+          AND ip_version = :ip_version
+        GROUP BY minute_ts
+        ORDER BY minute_ts ASC
+    ";
+
+    $stmt = @$db->prepare($sql);
+    if (!$stmt) {
+        $db->close();
+        return array();
+    }
+
+    $stmt->bindValue(':start', (int)$windowStart);
+    $stmt->bindValue(':link_tag', (string)$linkTag);
+    $stmt->bindValue(':ip_version', (int)$ipVersion);
+
+    $result = @$stmt->execute();
+    if ($result === false) {
+        $db->close();
+        return array();
+    }
+
+    $series = array();
+    while ($row = $result->fetchArray()) {
+        $minute = isset($row['minute_ts']) ? (int)$row['minute_ts'] : 0;
+        if ($minute <= 0) {
+            continue;
+        }
+        $inBytes = isset($row['in_bytes']) ? (float)$row['in_bytes'] : 0.0;
+        $outBytes = isset($row['out_bytes']) ? (float)$row['out_bytes'] : 0.0;
+        $series[] = array(
+            'ts' => $minute,
+            'in_bps' => (($inBytes * $samplingFactor) * 8.0) / 60.0,
+            'out_bps' => (($outBytes * $samplingFactor) * 8.0) / 60.0,
+        );
+    }
+
+    $db->close();
+    flow_cache_set('link_minute_series', $cachePayload, $series);
+    return $series;
+}
+
+function flow_fetch_as_minute_series($asn, $ipVersion, $hours, $selectedLinks = array()) {
+    $asn = (int)$asn;
+    if ($asn <= 0) {
+        return array();
+    }
+
+    $links = array_values(array_filter(array_map('strval', (array)$selectedLinks)));
+    sort($links);
+    $cachePayload = array(
+        'asn' => $asn,
+        'ip' => (int)$ipVersion,
+        'hours' => (int)$hours,
+        'links' => $links,
+        'backend' => flow_events_backend(),
+    );
+    $cacheHit = false;
+    $cached = flow_cache_get('as_minute_series', $cachePayload, 20, $cacheHit);
+    if ($cacheHit && is_array($cached)) {
+        return $cached;
+    }
+
+    $error = null;
+    $db = flow_events_open_connection($error);
+    if (!$db || !flow_events_has_table($db, 'flow_events')) {
+        if ($db) {
+            $db->close();
+        }
+        return array();
+    }
+
+    $windowStart = time() - (max(1, (int)$hours) * 3600);
+    $linkSql = '';
+    if (!empty($links)) {
+        $parts = array();
+        foreach ($links as $idx => $tag) {
+            $parts[] = ':link_' . $idx;
+        }
+        $linkSql = ' AND link_tag IN (' . implode(', ', $parts) . ')';
+    }
+
+    $sql = "
+        SELECT
+            minute_ts,
+            link_tag,
+            SUM(CASE WHEN dst_asn = :asn AND lower(direction) = 'in' THEN bytes ELSE 0 END) AS in_bytes,
+            SUM(CASE WHEN src_asn = :asn AND lower(direction) = 'out' THEN bytes ELSE 0 END) AS out_bytes
+        FROM flow_events
+        WHERE minute_ts >= :start
+          AND ip_version = :ip_version
+          AND (src_asn = :asn OR dst_asn = :asn)
+          {$linkSql}
+        GROUP BY minute_ts, link_tag
+        ORDER BY minute_ts ASC, link_tag ASC
+    ";
+
+    $stmt = @$db->prepare($sql);
+    if (!$stmt) {
+        $db->close();
+        return array();
+    }
+
+    $stmt->bindValue(':asn', $asn);
+    $stmt->bindValue(':start', (int)$windowStart);
+    $stmt->bindValue(':ip_version', (int)$ipVersion);
+    foreach ($links as $idx => $tag) {
+        $stmt->bindValue(':link_' . $idx, (string)$tag);
+    }
+
+    $result = @$stmt->execute();
+    if ($result === false) {
+        $db->close();
+        return array();
+    }
+
+    $timeline = array();
+    while ($row = $result->fetchArray()) {
+        $minute = isset($row['minute_ts']) ? (int)$row['minute_ts'] : 0;
+        if ($minute <= 0) {
+            continue;
+        }
+        $linkTag = isset($row['link_tag']) ? (string)$row['link_tag'] : '';
+        $samplingFactor = flow_link_sampling_factor($linkTag);
+        $inBytes = isset($row['in_bytes']) ? (float)$row['in_bytes'] : 0.0;
+        $outBytes = isset($row['out_bytes']) ? (float)$row['out_bytes'] : 0.0;
+        if (!isset($timeline[$minute])) {
+            $timeline[$minute] = array('in_bps' => 0.0, 'out_bps' => 0.0);
+        }
+        $timeline[$minute]['in_bps'] += (($inBytes * $samplingFactor) * 8.0) / 60.0;
+        $timeline[$minute]['out_bps'] += (($outBytes * $samplingFactor) * 8.0) / 60.0;
+    }
+
+    ksort($timeline, SORT_NUMERIC);
+    $series = array();
+    foreach ($timeline as $minute => $values) {
+        $series[] = array(
+            'ts' => (int)$minute,
+            'in_bps' => (float)$values['in_bps'],
+            'out_bps' => (float)$values['out_bps'],
+        );
+    }
+
+    $db->close();
+    flow_cache_set('as_minute_series', $cachePayload, $series);
+    return $series;
+}
+
+function flow_stats_from_minute_series($series) {
+    if (!is_array($series) || empty($series)) {
+        return null;
+    }
+
+    $stats = array(
+        'in' => array('min' => null, 'max' => null, 'current' => null),
+        'out' => array('min' => null, 'max' => null, 'current' => null),
+    );
+    foreach ($series as $point) {
+        $in = isset($point['in_bps']) ? (float)$point['in_bps'] : 0.0;
+        $out = isset($point['out_bps']) ? (float)$point['out_bps'] : 0.0;
+        if ($stats['in']['min'] === null || $in < $stats['in']['min']) {
+            $stats['in']['min'] = $in;
+        }
+        if ($stats['in']['max'] === null || $in > $stats['in']['max']) {
+            $stats['in']['max'] = $in;
+        }
+        if ($stats['out']['min'] === null || $out < $stats['out']['min']) {
+            $stats['out']['min'] = $out;
+        }
+        if ($stats['out']['max'] === null || $out > $stats['out']['max']) {
+            $stats['out']['max'] = $out;
+        }
+        $stats['in']['current'] = $in;
+        $stats['out']['current'] = $out;
+    }
+
+    return $stats;
+}
+
+function flow_render_link_svg_chart($series, $chartId, $title = '') {
+    if (!is_array($series) || empty($series)) {
+        return '<div class="flow-empty-state"><strong>Sem telemetria recente</strong><p>Sem pontos por minuto para este link na janela selecionada.</p></div>';
+    }
+
+    $w = 980.0;
+    $h = 320.0;
+    $padL = 56.0;
+    $padR = 14.0;
+    $padT = 14.0;
+    $padB = 36.0;
+    $plotW = $w - $padL - $padR;
+    $plotH = $h - $padT - $padB;
+
+    $n = count($series);
+    $max = 1.0;
+    foreach ($series as $p) {
+        $max = max($max, (float)$p['in_bps'], (float)$p['out_bps']);
+    }
+    $max *= 1.10;
+
+    $lineIn = '';
+    $lineOut = '';
+    $areaIn = '';
+    $areaOut = '';
+    $xTicks = '';
+    $yTicks = '';
+    $grid = '';
+    $firstX = $padL;
+    $lastX = $padL + $plotW;
+    $baseY = $padT + $plotH;
+
+    for ($i = 0; $i < $n; $i++) {
+        $x = $padL + (($n <= 1 ? 0.0 : ($i / ($n - 1))) * $plotW);
+        $yin = $baseY - (((float)$series[$i]['in_bps'] / $max) * $plotH);
+        $yout = $baseY - (((float)$series[$i]['out_bps'] / $max) * $plotH);
+        $lineIn .= ($i === 0 ? 'M ' : ' L ') . round($x, 2) . ' ' . round($yin, 2);
+        $lineOut .= ($i === 0 ? 'M ' : ' L ') . round($x, 2) . ' ' . round($yout, 2);
+    }
+
+    $areaIn = $lineIn . ' L ' . round($lastX, 2) . ' ' . round($baseY, 2) . ' L ' . round($firstX, 2) . ' ' . round($baseY, 2) . ' Z';
+    $areaOut = $lineOut . ' L ' . round($lastX, 2) . ' ' . round($baseY, 2) . ' L ' . round($firstX, 2) . ' ' . round($baseY, 2) . ' Z';
+
+    $gridXCount = 8;
+    for ($i = 0; $i <= $gridXCount; $i++) {
+        $x = $padL + (($i / $gridXCount) * $plotW);
+        $grid .= '<line x1="' . round($x, 2) . '" y1="' . $padT . '" x2="' . round($x, 2) . '" y2="' . round($baseY, 2) . '"></line>';
+        $idx = (int)round(($n - 1) * ($i / $gridXCount));
+        $labelTs = isset($series[$idx]['ts']) ? (int)$series[$idx]['ts'] : 0;
+        $xTicks .= '<text x="' . round($x, 2) . '" y="' . round($h - 10, 2) . '">' . htmlspecialchars(date('H:i', $labelTs)) . '</text>';
+    }
+
+    $gridYCount = 5;
+    for ($i = 0; $i <= $gridYCount; $i++) {
+        $y = $padT + (($i / $gridYCount) * $plotH);
+        $grid .= '<line x1="' . $padL . '" y1="' . round($y, 2) . '" x2="' . round($padL + $plotW, 2) . '" y2="' . round($y, 2) . '"></line>';
+        $val = $max * (1 - ($i / $gridYCount));
+        $yTicks .= '<text x="' . round($padL - 8, 2) . '" y="' . round($y + 4, 2) . '">' . htmlspecialchars(flow_format_bits($val)) . '</text>';
+    }
+
+    $chartTitle = $title !== '' ? '<text class="flow-link-svg-title" x="' . round($padL + 8, 2) . '" y="' . round($padT + 16, 2) . '">' . htmlspecialchars($title) . '</text>' : '';
+
+    return '<div class="flow-link-svg-wrap"><svg class="flow-link-svg" viewBox="0 0 ' . $w . ' ' . $h . '" role="img" aria-labelledby="' . htmlspecialchars($chartId) . '">'
+        . '<defs>'
+        . '<linearGradient id="flowInFill-' . htmlspecialchars($chartId) . '" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="rgba(103,232,249,0.35)"></stop><stop offset="100%" stop-color="rgba(103,232,249,0.03)"></stop></linearGradient>'
+        . '<linearGradient id="flowOutFill-' . htmlspecialchars($chartId) . '" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="rgba(129,140,248,0.28)"></stop><stop offset="100%" stop-color="rgba(129,140,248,0.02)"></stop></linearGradient>'
+        . '</defs>'
+        . '<g class="flow-link-svg-grid">' . $grid . '</g>'
+        . '<path class="flow-link-svg-area-in" d="' . $areaIn . '" fill="url(#flowInFill-' . htmlspecialchars($chartId) . ')"></path>'
+        . '<path class="flow-link-svg-area-out" d="' . $areaOut . '" fill="url(#flowOutFill-' . htmlspecialchars($chartId) . ')"></path>'
+        . '<path class="flow-link-svg-line-in" d="' . $lineIn . '"></path>'
+        . '<path class="flow-link-svg-line-out" d="' . $lineOut . '"></path>'
+        . '<g class="flow-link-svg-y">' . $yTicks . '</g>'
+        . '<g class="flow-link-svg-x">' . $xTicks . '</g>'
+        . $chartTitle
+        . '</svg></div>';
+}
+
 function flow_render_link_card($title, $graph4, $graph6 = '', $stats4 = null, $stats6 = null) {
     $html = '<article class="flow-link-card">';
     $html .= '<header><span>' . htmlspecialchars($title) . '</span></header>';
     $html .= '<div class="flow-graph-pair">';
-    $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div><div class="flow-link-graph-frame">' . $graph4 . '</div>' . flow_render_link_legend($stats4) . flow_render_graph_stats($stats4) . '</div>';
+    $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div><div class="flow-link-graph-frame">' . $graph4 . '</div>' . flow_render_graph_stats($stats4) . '</div>';
     if ($graph6 !== '') {
-        $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div><div class="flow-link-graph-frame">' . $graph6 . '</div>' . flow_render_link_legend($stats6) . flow_render_graph_stats($stats6) . '</div>';
+        $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div><div class="flow-link-graph-frame">' . $graph6 . '</div>' . flow_render_graph_stats($stats6) . '</div>';
     }
     $html .= '</div>';
     $html .= '</article>';

@@ -35,13 +35,16 @@ foreach ($knownlinks as $link) {
     if (!isset($link['tag']) || !isset($link['descr'])) {
         continue;
     }
-    $stats4 = flow_fetch_link_flow_stats($link['tag'], 4, $hours);
-    $stats6 = $showv6 ? flow_fetch_link_flow_stats($link['tag'], 6, $hours) : null;
-    if ($stats4 === null && (!$showv6 || $stats6 === null)) {
+    $series4 = flow_fetch_link_minute_series($link['tag'], 4, $hours);
+    $series6 = $showv6 ? flow_fetch_link_minute_series($link['tag'], 6, $hours) : array();
+    $stats4 = flow_stats_from_minute_series($series4);
+    $stats6 = $showv6 ? flow_stats_from_minute_series($series6) : null;
+    if (empty($series4) && (!$showv6 || empty($series6))) {
         continue;
     }
-    $graph4 = '<img alt="Fluxo IPv4" src="linkgraph.php?link=' . urlencode($link['tag']) . '&numhours=' . $hours . '&width=' . $default_graph_width . '&height=' . $default_graph_height . '&dname=' . rawurlencode($link['descr'] . ' - IPv4') . '&v=4" />';
-    $graph6 = $showv6 ? '<img alt="Fluxo IPv6" src="linkgraph.php?link=' . urlencode($link['tag']) . '&numhours=' . $hours . '&width=' . $default_graph_width . '&height=' . $default_graph_height . '&dname=' . rawurlencode($link['descr'] . ' - IPv6') . '&v=6" />' : '';
+    $chartKey = preg_replace('/[^a-zA-Z0-9_-]/', '-', (string)$link['tag']);
+    $graph4 = flow_render_link_svg_chart($series4, 'link-' . $chartKey . '-v4', $link['descr'] . ' - IPv4');
+    $graph6 = $showv6 ? flow_render_link_svg_chart($series6, 'link-' . $chartKey . '-v6', $link['descr'] . ' - IPv6') : '';
     $cards .= flow_render_link_card($link['descr'], $graph4, $graph6, $stats4, $stats6);
 }
 

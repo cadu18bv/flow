@@ -440,10 +440,16 @@ function flow_render_dashboard_provider_card($provider, $hours, $start, $end, $s
     $dominantInfo = $dominantAsn > 0 ? flow_enrich_as_info($dominantAsn, getASInfo($dominantAsn)) : array('descr' => $provider['label']);
     $dominantDescr = isset($dominantInfo['descr']) && trim((string)$dominantInfo['descr']) !== '' ? $dominantInfo['descr'] : $provider['label'];
 
-    $graph4 = $dominantAsn > 0 ? getHTMLUrl($dominantAsn, 4, $dominantDescr, $start, $end, $peerusage, $selectedLinks) : flow_render_empty_state('Sem grafico', 'Nenhum ASN do grupo gerou amostras nessa janela.');
-    $graph6 = ($showv6 && $dominantAsn > 0) ? getHTMLUrl($dominantAsn, 6, $dominantDescr, $start, $end, $peerusage, $selectedLinks) : '';
-    $stats4 = $dominantAsn > 0 ? flow_fetch_rrd_graph_stats($dominantAsn, 4, $start, $end, $peerusage, $selectedLinks) : null;
-    $stats6 = ($showv6 && $dominantAsn > 0) ? flow_fetch_rrd_graph_stats($dominantAsn, 6, $start, $end, $peerusage, $selectedLinks) : null;
+    $series4 = $dominantAsn > 0 ? flow_fetch_as_minute_series($dominantAsn, 4, $hours, $selectedLinks) : array();
+    $series6 = ($showv6 && $dominantAsn > 0) ? flow_fetch_as_minute_series($dominantAsn, 6, $hours, $selectedLinks) : array();
+    $graph4 = $dominantAsn > 0
+        ? flow_render_link_svg_chart($series4, 'dash-' . $provider['key'] . '-v4', $dominantDescr . ' - IPv4')
+        : flow_render_empty_state('Sem grafico', 'Nenhum ASN do grupo gerou amostras nessa janela.');
+    $graph6 = ($showv6 && $dominantAsn > 0)
+        ? flow_render_link_svg_chart($series6, 'dash-' . $provider['key'] . '-v6', $dominantDescr . ' - IPv6')
+        : '';
+    $stats4 = $dominantAsn > 0 ? flow_stats_from_minute_series($series4) : null;
+    $stats6 = ($showv6 && $dominantAsn > 0) ? flow_stats_from_minute_series($series6) : null;
 
     $totals = $group['totals'];
     $memberCount = count($group['members']);
