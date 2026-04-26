@@ -17,8 +17,8 @@ $knownlinks = getknownlinks();
 if (!is_array($knownlinks)) {
     $knownlinks = array();
 }
-$hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 24;
-$hours = $hours > 0 ? $hours : 24;
+$hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 4;
+$hours = $hours > 0 ? $hours : 4;
 $label = statsLabelForHours($hours);
 
 $heroStats = array(

@@ -295,8 +295,8 @@ HTML;
 }
 
 $queryAs = isset($_GET['as']) ? (int)$_GET['as'] : 0;
-$queryHours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 24;
-$queryHours = $queryHours > 0 ? $queryHours : 24;
+$queryHours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 4;
+$queryHours = $queryHours > 0 ? $queryHours : 4;
 $selectedLinks = flow_as_drill_selected_links();
 $windowStart = time() - ($queryHours * 3600);
 $dbPath = flow_as_drill_db_path();

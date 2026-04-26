@@ -155,6 +155,99 @@ function flow_ddos_signature_from_flow_type($flowType) {
     return array('proto' => $proto, 'port' => $port);
 }
 
+function flow_ddos_schema_columns($db) {
+    static $cache = null;
+    if ($cache !== null) {
+        return $cache;
+    }
+
+    $cache = array();
+    if (!flow_events_has_table($db, 'flow_events')) {
+        return $cache;
+    }
+
+    if ($db instanceof SQLite3) {
+        $result = @$db->query('PRAGMA table_info(flow_events)');
+        if ($result !== false) {
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                if (isset($row['name']) && trim((string)$row['name']) !== '') {
+                    $cache[strtolower(trim((string)$row['name']))] = true;
+                }
+            }
+        }
+        return $cache;
+    }
+
+    $stmt = @$db->prepare("SELECT column_name FROM information_schema.columns WHERE table_name = 'flow_events'");
+    if ($stmt) {
+        $result = @$stmt->execute();
+        if ($result !== false) {
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                if (isset($row['column_name']) && trim((string)$row['column_name']) !== '') {
+                    $cache[strtolower(trim((string)$row['column_name']))] = true;
+                }
+            }
+        }
+    }
+
+    return $cache;
+}
+
+function flow_ddos_has_column($db, $columnName) {
+    $columns = flow_ddos_schema_columns($db);
+    return isset($columns[strtolower((string)$columnName)]);
+}
+
+function flow_ddos_protocol_select_sql($db) {
+    if (flow_ddos_has_column($db, 'ip_protocol')) return 'MAX(ip_protocol) AS proto_raw';
+    if (flow_ddos_has_column($db, 'protocol')) return 'MAX(protocol) AS proto_raw';
+    if (flow_ddos_has_column($db, 'proto')) return 'MAX(proto) AS proto_raw';
+    if (flow_ddos_has_column($db, 'l4_protocol')) return 'MAX(l4_protocol) AS proto_raw';
+    return 'NULL AS proto_raw';
+}
+
+function flow_ddos_port_select_sql($db) {
+    if (flow_ddos_has_column($db, 'dst_port')) return 'MAX(dst_port) AS port_raw';
+    if (flow_ddos_has_column($db, 'dport')) return 'MAX(dport) AS port_raw';
+    if (flow_ddos_has_column($db, 'l4_dst_port')) return 'MAX(l4_dst_port) AS port_raw';
+    if (flow_ddos_has_column($db, 'port')) return 'MAX(port) AS port_raw';
+    if (flow_ddos_has_column($db, 'src_port')) return 'MAX(src_port) AS port_raw';
+    if (flow_ddos_has_column($db, 'sport')) return 'MAX(sport) AS port_raw';
+    if (flow_ddos_has_column($db, 'l4_src_port')) return 'MAX(l4_src_port) AS port_raw';
+    return 'NULL AS port_raw';
+}
+
+function flow_ddos_signature_from_row($row) {
+    $sig = flow_ddos_signature_from_flow_type(isset($row['flow_type']) ? $row['flow_type'] : '');
+
+    $protoRaw = isset($row['proto_raw']) ? trim((string)$row['proto_raw']) : '';
+    if ($protoRaw !== '' && $protoRaw !== '0') {
+        if (ctype_digit($protoRaw)) {
+            $protoMap = array(
+                1 => 'ICMP',
+                2 => 'IGMP',
+                6 => 'TCP',
+                17 => 'UDP',
+                47 => 'GRE',
+                50 => 'ESP',
+                58 => 'ICMPv6',
+                132 => 'SCTP',
+            );
+            $protoInt = (int)$protoRaw;
+            $sig['proto'] = isset($protoMap[$protoInt]) ? $protoMap[$protoInt] : ('IP-' . $protoInt);
+        } else {
+            $sig['proto'] = strtoupper($protoRaw);
+        }
+    }
+
+    $portRaw = isset($row['port_raw']) ? trim((string)$row['port_raw']) : '';
+    if ($portRaw !== '' && $portRaw !== '0') {
+        $sig['port'] = $portRaw;
+    }
+
+    return $sig;
+}
+
 function flow_ddos_attack_kind($row) {
     $sources = isset($row['unique_sources']) ? (int)$row['unique_sources'] : 0;
     $sourceAsn = isset($row['unique_source_asns']) ? (int)$row['unique_source_asns'] : 0;
@@ -222,6 +315,8 @@ function flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit) {
         SELECT
             COALESCE(NULLIF(dst_ip, ''), '0.0.0.0') AS ip,
             MAX(dst_asn) AS asn,
+            " . flow_ddos_protocol_select_sql($db) . ",
+            " . flow_ddos_port_select_sql($db) . ",
             COUNT(DISTINCT src_ip) AS unique_sources,
             COUNT(DISTINCT src_asn) AS unique_source_asns,
             COUNT(DISTINCT link_tag) AS links,
@@ -274,6 +369,8 @@ function flow_ddos_query_attackers($db, $windowStart, $selectedLinks, $limit) {
         SELECT
             COALESCE(NULLIF(src_ip, ''), '0.0.0.0') AS ip,
             MAX(src_asn) AS asn,
+            " . flow_ddos_protocol_select_sql($db) . ",
+            " . flow_ddos_port_select_sql($db) . ",
             COUNT(DISTINCT dst_ip) AS unique_targets,
             COUNT(DISTINCT link_tag) AS links,
             SUM(bytes) AS total_bytes,
@@ -327,6 +424,8 @@ function flow_ddos_query_bursts($db, $windowStart, $selectedLinks, $limit) {
             link_tag,
             COALESCE(NULLIF(dst_ip, ''), '0.0.0.0') AS dst_ip,
             MAX(dst_asn) AS dst_asn,
+            " . flow_ddos_protocol_select_sql($db) . ",
+            " . flow_ddos_port_select_sql($db) . ",
             COUNT(DISTINCT src_ip) AS unique_sources,
             SUM(bytes) AS total_bytes,
             SUM(samples) AS total_samples,
@@ -378,6 +477,8 @@ function flow_ddos_query_suspect_flows($db, $windowStart, $selectedLinks, $limit
             COALESCE(NULLIF(dst_ip, ''), '0.0.0.0') AS dst_ip,
             MAX(dst_asn) AS dst_asn,
             link_tag,
+            " . flow_ddos_protocol_select_sql($db) . ",
+            " . flow_ddos_port_select_sql($db) . ",
             MAX(flow_type) AS flow_type,
             SUM(bytes) AS total_bytes,
             SUM(samples) AS total_samples,
@@ -453,7 +554,7 @@ function flow_ddos_targets_table($targets, $dnsMap = array()) {
 
     $rows = array();
     foreach ($targets as $row) {
-        $sig = flow_ddos_signature_from_flow_type(isset($row['flow_type']) ? $row['flow_type'] : '');
+        $sig = flow_ddos_signature_from_row($row);
         $rows[] = array(
             flow_ddos_ip_cell($row['ip'], $row['asn'], $dnsMap),
             htmlspecialchars(flow_ddos_attack_kind($row)),
@@ -485,7 +586,7 @@ function flow_ddos_attackers_table($attackers, $dnsMap = array()) {
 
     $rows = array();
     foreach ($attackers as $row) {
-        $sig = flow_ddos_signature_from_flow_type(isset($row['flow_type']) ? $row['flow_type'] : '');
+        $sig = flow_ddos_signature_from_row($row);
         $rows[] = array(
             flow_ddos_ip_cell($row['ip'], $row['asn'], $dnsMap),
             htmlspecialchars((string)$sig['proto']),
@@ -515,7 +616,7 @@ function flow_ddos_burst_cards($bursts, $dnsMap = array()) {
 
     $html = '<div class="flow-threat-grid">';
     foreach ($bursts as $row) {
-        $sig = flow_ddos_signature_from_flow_type(isset($row['flow_type']) ? $row['flow_type'] : '');
+        $sig = flow_ddos_signature_from_row($row);
         $html .= '<article class="flow-threat-card">';
         $html .= '<header><span>' . htmlspecialchars(date('d/m H:i', (int)$row['minute_ts'])) . '</span><strong>' . htmlspecialchars((string)$row['link_tag']) . '</strong></header>';
         $html .= '<div class="flow-threat-copy">' . flow_ddos_ip_cell($row['dst_ip'], $row['dst_asn'], $dnsMap) . '</div>';
@@ -543,7 +644,7 @@ function flow_ddos_suspect_flows_table($flows, $dnsMap = array()) {
 
     $rows = array();
     foreach ($flows as $row) {
-        $sig = flow_ddos_signature_from_flow_type(isset($row['flow_type']) ? $row['flow_type'] : '');
+        $sig = flow_ddos_signature_from_row($row);
         $duration = max(1, ((int)$row['last_seen'] - (int)$row['first_seen']) / 60);
         $rows[] = array(
             flow_ddos_ip_cell($row['src_ip'], $row['src_asn'], $dnsMap),
@@ -563,8 +664,8 @@ function flow_ddos_suspect_flows_table($flows, $dnsMap = array()) {
     );
 }
 
-$hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 24;
-$hours = $hours > 0 ? $hours : 24;
+$hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 4;
+$hours = $hours > 0 ? $hours : 4;
 $limit = isset($_GET['n']) ? (int)$_GET['n'] : 20;
 $limit = $limit > 0 ? min($limit, 100) : 20;
 $knownlinks = getknownlinks();

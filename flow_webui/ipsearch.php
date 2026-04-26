@@ -9,6 +9,7 @@ function flow_query_db_path() {
 function flow_query_hours_options() {
     return array(
         1 => '1 hora',
+        4 => '4 horas',
         6 => '6 horas',
         24 => '24 horas',
         72 => '72 horas',
@@ -561,10 +562,10 @@ $queryIp = isset($_GET['ip']) ? trim($_GET['ip']) : '';
 $queryMode = isset($_GET['mode']) ? $_GET['mode'] : 'any';
 $queryLink = isset($_GET['link']) ? trim($_GET['link']) : '';
 $queryAsn = isset($_GET['asn']) ? trim($_GET['asn']) : '';
-$queryHours = isset($_GET['hours']) ? (int)$_GET['hours'] : 24;
+$queryHours = isset($_GET['hours']) ? (int)$_GET['hours'] : 4;
 $exportPdf = isset($_GET['export']) && $_GET['export'] === 'pdf';
 $queryMode = in_array($queryMode, array('any', 'src', 'dst'), true) ? $queryMode : 'any';
-$queryHours = array_key_exists($queryHours, flow_query_hours_options()) ? $queryHours : 24;
+$queryHours = array_key_exists($queryHours, flow_query_hours_options()) ? $queryHours : 4;
 $dbPath = flow_query_db_path();
 $dbReady = flow_events_available();
 $pipeline = flow_query_pipeline_snapshot($dbPath);

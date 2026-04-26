@@ -6,7 +6,7 @@ if (!isset($peerusage)) $peerusage = 0;
 $ntop = isset($_GET['n']) ? (int)$_GET['n'] : 20;
 if ($ntop < 1) $ntop = 20;
 if ($ntop > 200) $ntop = 200;
-$hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 24;
+$hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 4;
 
 $statsfile = $peerusage ? $daypeerstatsfile : statsFileForHours($hours);
 $label = statsLabelForHours($hours);

@@ -537,9 +537,9 @@ function flow_render_dashboard_provider_card($provider, $hours, $start, $end, $s
 }
 
 $ntop = 6;
-$hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 24;
+$hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 4;
 if ($hours < 1) {
-    $hours = 24;
+    $hours = 4;
 }
 $label = statsLabelForHours($hours);
 $knownlinks = getknownlinks();

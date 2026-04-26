@@ -52,6 +52,25 @@ function flow_cache_enabled() {
     return !in_array($flag, array('0', 'off', 'false', 'no'), true);
 }
 
+function flow_cache_use_apcu() {
+    static $enabled = null;
+    if ($enabled !== null) {
+        return $enabled;
+    }
+    $flag = strtolower(trim((string)flow_env_setting('ASSTATS_UI_CACHE_APCU', '1')));
+    if (in_array($flag, array('0', 'off', 'false', 'no'), true)) {
+        $enabled = false;
+        return $enabled;
+    }
+    $enabled = function_exists('apcu_fetch') && function_exists('apcu_store') && ini_get('apc.enabled');
+    return $enabled;
+}
+
+function flow_cache_use_disk_fallback() {
+    $flag = strtolower(trim((string)flow_env_setting('ASSTATS_UI_CACHE_DISK_FALLBACK', '1')));
+    return !in_array($flag, array('0', 'off', 'false', 'no'), true);
+}
+
 function flow_cache_namespace_dir($namespace) {
     $namespace = preg_replace('/[^a-zA-Z0-9_\-]/', '_', (string)$namespace);
     $dir = flow_runtime_dir() . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . $namespace;
@@ -65,9 +84,42 @@ function flow_cache_key($payload) {
     return sha1(serialize($payload));
 }
 
+function flow_cache_apcu_key($namespace, $payload) {
+    return 'flow:' . preg_replace('/[^a-zA-Z0-9_\-]/', '_', (string)$namespace) . ':' . flow_cache_key($payload);
+}
+
 function flow_cache_get($namespace, $payload, $ttl, &$hit = null) {
+    static $requestCache = array();
     $hit = false;
     if (!flow_cache_enabled()) {
+        return null;
+    }
+    $ttl = max(1, (int)$ttl);
+    $localKey = flow_cache_apcu_key($namespace, $payload);
+
+    if (isset($requestCache[$localKey])) {
+        $entry = $requestCache[$localKey];
+        if (is_array($entry) && isset($entry['stored_at']) && array_key_exists('value', $entry)) {
+            if (((int)$entry['stored_at'] + $ttl) >= time()) {
+                $hit = true;
+                return $entry['value'];
+            }
+        }
+    }
+
+    if (flow_cache_use_apcu()) {
+        $ok = false;
+        $entry = apcu_fetch($localKey, $ok);
+        if ($ok && is_array($entry) && isset($entry['stored_at']) && array_key_exists('value', $entry)) {
+            if (((int)$entry['stored_at'] + $ttl) >= time()) {
+                $requestCache[$localKey] = $entry;
+                $hit = true;
+                return $entry['value'];
+            }
+        }
+    }
+
+    if (!flow_cache_use_disk_fallback()) {
         return null;
     }
     $file = flow_cache_namespace_dir($namespace) . DIRECTORY_SEPARATOR . flow_cache_key($payload) . '.cache';
@@ -82,22 +134,42 @@ function flow_cache_get($namespace, $payload, $ttl, &$hit = null) {
     if (!is_array($entry) || !isset($entry['stored_at']) || !array_key_exists('value', $entry)) {
         return null;
     }
-    if (((int)$entry['stored_at'] + max(1, (int)$ttl)) < time()) {
+    if (((int)$entry['stored_at'] + $ttl) < time()) {
         return null;
+    }
+    $requestCache[$localKey] = $entry;
+    if (flow_cache_use_apcu()) {
+        apcu_store($localKey, $entry, $ttl);
     }
     $hit = true;
     return $entry['value'];
 }
 
 function flow_cache_set($namespace, $payload, $value) {
+    static $requestCache = array();
     if (!flow_cache_enabled()) {
         return;
     }
-    $file = flow_cache_namespace_dir($namespace) . DIRECTORY_SEPARATOR . flow_cache_key($payload) . '.cache';
+    $storedAt = time();
     $entry = array(
-        'stored_at' => time(),
+        'stored_at' => $storedAt,
         'value' => $value,
     );
+    $localKey = flow_cache_apcu_key($namespace, $payload);
+    $requestCache[$localKey] = $entry;
+
+    if (flow_cache_use_apcu()) {
+        $defaultTtl = (int)flow_env_setting('ASSTATS_UI_CACHE_APCU_TTL', '120');
+        if ($defaultTtl <= 0) {
+            $defaultTtl = 120;
+        }
+        apcu_store($localKey, $entry, $defaultTtl);
+    }
+
+    if (!flow_cache_use_disk_fallback()) {
+        return;
+    }
+    $file = flow_cache_namespace_dir($namespace) . DIRECTORY_SEPARATOR . flow_cache_key($payload) . '.cache';
     @file_put_contents($file, serialize($entry), LOCK_EX);
 }
 
@@ -279,7 +351,14 @@ function flow_hidden_inputs($params) {
 
 function flow_top_links() {
     global $top_intervals;
-    return isset($top_intervals) && is_array($top_intervals) ? $top_intervals : array(array('hours' => 24, 'label' => '24 horas'));
+    return isset($top_intervals) && is_array($top_intervals) ? $top_intervals : array(
+        array('hours' => 1, 'label' => '1 hora'),
+        array('hours' => 4, 'label' => '4 horas'),
+        array('hours' => 6, 'label' => '6 horas'),
+        array('hours' => 24, 'label' => '24 horas'),
+        array('hours' => 72, 'label' => '72 horas'),
+        array('hours' => 168, 'label' => '7 dias'),
+    );
 }
 
 function flow_render_shell_start($title, $active = 'overview') {
@@ -865,6 +944,16 @@ function flow_render_panel($title, $body, $icon = 'fa-circle-o', $classes = '') 
 
 function flow_render_filter_form($hours, $ntop, $selectedLinks, $action = 'index.php', $extra = array()) {
     $options = flow_top_links();
+    $hasCurrent = false;
+    foreach ($options as $option) {
+        if ((int)$option['hours'] === (int)$hours) {
+            $hasCurrent = true;
+            break;
+        }
+    }
+    if (!$hasCurrent && (int)$hours > 0) {
+        $options[] = array('hours' => (int)$hours, 'label' => (int)$hours . ' horas');
+    }
     $html = '<form method="get" action="' . htmlspecialchars($action) . '" class="flow-form-stack">';
     $html .= flow_hidden_inputs($extra);
     foreach ($selectedLinks as $tag) {

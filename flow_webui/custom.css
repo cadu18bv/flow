@@ -1535,55 +1535,31 @@ body[data-theme="light"] .flow-svg-chart .grid line {
   background:
     radial-gradient(circle at top, rgba(77, 212, 255, 0.10), transparent 42%),
     rgba(7, 17, 31, 0.92);
+  min-height: 540px;
 }
 
-.flow-world-map svg {
-  display: block;
+.flow-world-map .leaflet-container {
   width: 100%;
-  height: auto;
+  height: 540px;
+  background: #07111f;
+  font-family: "Segoe UI", "Trebuchet MS", sans-serif;
 }
 
-.flow-world-map rect {
-  fill: url(#flowWorldMapBackground);
+.flow-world-map .leaflet-control-attribution {
+  background: rgba(7, 17, 31, 0.72);
+  color: #8ca7bf;
 }
 
-.flow-world-grid line {
-  stroke: rgba(77, 212, 255, 0.12);
-  stroke-width: 1;
+.flow-world-map .leaflet-popup-content-wrapper,
+.flow-world-map .leaflet-popup-tip {
+  background: rgba(8, 18, 34, 0.95);
+  color: #dff8ff;
+  border: 1px solid rgba(77, 212, 255, 0.24);
 }
 
-.flow-world-continents path {
-  fill: rgba(77, 212, 255, 0.14);
-  stroke: rgba(134, 224, 255, 0.26);
-  stroke-width: 1.2;
-}
-
-.flow-world-arcs path {
-  fill: none;
-  stroke: rgba(77, 212, 255, 0.38);
-  stroke-width: 1.2;
-  stroke-linecap: round;
-}
-
-.flow-world-dots circle {
-  fill: rgba(77, 212, 255, 0.88);
-  stroke: rgba(255, 255, 255, 0.78);
-  stroke-width: 1.5;
-  filter: url(#flowWorldMapGlow);
-}
-
-.flow-world-anchor circle {
-  fill: rgba(0, 255, 166, 0.9);
-  stroke: rgba(255, 255, 255, 0.9);
-  stroke-width: 1.4;
-}
-
-.flow-world-anchor text {
-  fill: #d8f8ff;
-  font-size: 11px;
-  font-weight: 700;
-  text-anchor: start;
-  transform: translate(10px, -10px);
+.flow-world-map .leaflet-popup-content {
+  margin: 10px 12px;
+  line-height: 1.35;
 }
 
 .flow-hotspot-grid {
@@ -1646,30 +1622,20 @@ body[data-theme="light"] .flow-world-map {
     linear-gradient(180deg, rgba(252, 254, 255, 0.96), rgba(244, 248, 251, 0.92));
 }
 
-body[data-theme="light"] .flow-world-grid line {
-  stroke: rgba(77, 122, 160, 0.14);
+body[data-theme="light"] .flow-world-map .leaflet-container {
+  background: #eef4f8;
 }
 
-body[data-theme="light"] .flow-world-continents path {
-  fill: rgba(20, 123, 181, 0.14);
-  stroke: rgba(69, 129, 175, 0.28);
+body[data-theme="light"] .flow-world-map .leaflet-control-attribution {
+  background: rgba(246, 250, 253, 0.84);
+  color: #5f7890;
 }
 
-body[data-theme="light"] .flow-world-arcs path {
-  stroke: rgba(20, 123, 181, 0.42);
-}
-
-body[data-theme="light"] .flow-world-dots circle {
-  fill: rgba(20, 123, 181, 0.86);
-  stroke: rgba(255, 255, 255, 0.9);
-}
-
-body[data-theme="light"] .flow-world-anchor circle {
-  fill: rgba(20, 154, 120, 0.88);
-}
-
-body[data-theme="light"] .flow-world-anchor text {
-  fill: #1a3e59;
+body[data-theme="light"] .flow-world-map .leaflet-popup-content-wrapper,
+body[data-theme="light"] .flow-world-map .leaflet-popup-tip {
+  background: rgba(252, 254, 255, 0.98);
+  color: #173047;
+  border-color: rgba(66, 118, 153, 0.24);
 }
 
 .flow-svg-chart .grid text,
