@@ -63,8 +63,64 @@ function flow_noc_bgp_he($asn) {
     return '<a class="flow-inline-asn" href="' . htmlspecialchars($url) . '" target="_blank" rel="noopener noreferrer">AS' . htmlspecialchars((string)$asn) . '</a>';
 }
 
-function flow_noc_ip_cell($ip, $asn) {
-    return '<div class="flow-ip-cell"><strong>' . htmlspecialchars((string)$ip) . '</strong>' . flow_noc_bgp_he($asn) . '</div>';
+function flow_noc_dns_cache_path() {
+    return flow_runtime_dir() . DIRECTORY_SEPARATOR . 'flow_dns_cache.json';
+}
+
+function flow_noc_dns_cache_read() {
+    $path = flow_noc_dns_cache_path();
+    if (!is_file($path)) {
+        return array();
+    }
+    $json = @file_get_contents($path);
+    if ($json === false || trim((string)$json) === '') {
+        return array();
+    }
+    $data = json_decode($json, true);
+    return is_array($data) ? $data : array();
+}
+
+function flow_noc_dns_cache_write($cache) {
+    $dir = flow_runtime_dir();
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    if (!is_dir($dir) || !is_writable($dir)) {
+        return;
+    }
+    @file_put_contents(flow_noc_dns_cache_path(), json_encode($cache));
+}
+
+function flow_noc_resolve_hostname($ip, &$cache) {
+    $ip = trim((string)$ip);
+    if ($ip === '') {
+        return '';
+    }
+
+    if (isset($cache[$ip]) && isset($cache[$ip]['updated_at']) && ((time() - (int)$cache[$ip]['updated_at']) < 86400)) {
+        return isset($cache[$ip]['host']) ? (string)$cache[$ip]['host'] : '';
+    }
+
+    $host = @gethostbyaddr($ip);
+    if (!is_string($host) || $host === '' || strcasecmp($host, $ip) === 0) {
+        $host = '';
+    }
+    $cache[$ip] = array(
+        'host' => $host,
+        'updated_at' => time(),
+    );
+    return $host;
+}
+
+function flow_noc_ip_cell($ip, $asn, $dnsMap = array()) {
+    $ipText = trim((string)$ip);
+    $host = isset($dnsMap[$ipText]) ? trim((string)$dnsMap[$ipText]) : '';
+    $html = '<div class="flow-ip-cell"><strong>' . htmlspecialchars($ipText) . '</strong>' . flow_noc_bgp_he($asn);
+    if ($host !== '') {
+        $html .= '<small>' . htmlspecialchars($host) . '</small>';
+    }
+    $html .= '</div>';
+    return $html;
 }
 
 function flow_noc_render_table($headers, $rows) {
@@ -325,6 +381,38 @@ function flow_noc_render_world_map($points) {
         'M406 86 L424 78 L438 84 L436 98 L420 104 L406 96 Z', // Greenland/Iceland hint
     );
 
+    $anchor = array(
+        'label' => flow_env_setting('FLOW_NOC_ANCHOR_LABEL', 'NOC Core'),
+        'lat' => (float)flow_env_setting('FLOW_NOC_ANCHOR_LAT', '-3.7319'),
+        'lon' => (float)flow_env_setting('FLOW_NOC_ANCHOR_LON', '-38.5267'),
+    );
+    $anchorLabel = htmlspecialchars((string)$anchor['label']);
+    $anchorX = (($anchor['lon'] + 180.0) / 360.0) * $width;
+    $anchorY = ((90.0 - $anchor['lat']) / 180.0) * $height;
+
+    $arcs = '';
+    $sortedPoints = $points;
+    usort($sortedPoints, function ($a, $b) {
+        if ((float)$a['bytes'] === (float)$b['bytes']) {
+            return 0;
+        }
+        return ((float)$a['bytes'] > (float)$b['bytes']) ? -1 : 1;
+    });
+
+    $arcCount = 0;
+    foreach ($sortedPoints as $point) {
+        if ($arcCount >= 80) {
+            break;
+        }
+        $x = (($point['lon'] + 180.0) / 360.0) * $width;
+        $y = ((90.0 - $point['lat']) / 180.0) * $height;
+        $midX = ($anchorX + $x) / 2.0;
+        $curve = 28 + (160 * ((float)$point['bytes'] / $maxBytes));
+        $midY = min($anchorY, $y) - $curve;
+        $arcs .= '<path d="M ' . round($anchorX, 2) . ' ' . round($anchorY, 2) . ' Q ' . round($midX, 2) . ' ' . round($midY, 2) . ' ' . round($x, 2) . ' ' . round($y, 2) . '"></path>';
+        $arcCount++;
+    }
+
     $dots = '';
     foreach ($points as $point) {
         $x = (($point['lon'] + 180.0) / 360.0) * $width;
@@ -361,7 +449,12 @@ HTML;
 
     $html .= <<<HTML
     </g>
+    <g class="flow-world-arcs">{$arcs}</g>
     <g class="flow-world-dots">{$dots}</g>
+    <g class="flow-world-anchor">
+      <circle cx="{$anchorX}" cy="{$anchorY}" r="7"></circle>
+      <text x="{$anchorX}" y="{$anchorY}">{$anchorLabel}</text>
+    </g>
   </svg>
 </div>
 HTML;
@@ -458,7 +551,7 @@ function flow_noc_country_cards($countries) {
     return $html;
 }
 
-function flow_noc_trace_table($rows) {
+function flow_noc_trace_table($rows, $dnsMap = array()) {
     if (empty($rows)) {
         return flow_render_empty_state('Sem rastreabilidade', 'Nao houve eventos suficientes para montar a trilha global de IPs observados.');
     }
@@ -482,7 +575,7 @@ function flow_noc_trace_table($rows) {
         }
 
         $tableRows[] = array(
-            flow_noc_ip_cell($row['remote_ip'], $row['remote_asn']),
+            flow_noc_ip_cell($row['remote_ip'], $row['remote_asn'], $dnsMap),
             htmlspecialchars($location),
             htmlspecialchars(implode(' • ', $extra)),
             htmlspecialchars((string)$row['local_ips']),
@@ -525,6 +618,19 @@ if ($db) {
     flow_noc_geo_cache_write($cache);
 }
 
+$dnsCache = flow_noc_dns_cache_read();
+$dnsMap = array();
+$dnsCandidates = array();
+foreach ($traceRows as $row) {
+    if (!empty($row['remote_ip'])) {
+        $dnsCandidates[(string)$row['remote_ip']] = true;
+    }
+}
+foreach (array_slice(array_keys($dnsCandidates), 0, 160) as $ip) {
+    $dnsMap[$ip] = flow_noc_resolve_hostname($ip, $dnsCache);
+}
+flow_noc_dns_cache_write($dnsCache);
+
 $heroStats = array(
     array('label' => 'Janela', 'value' => statsLabelForHours($hours)),
     array('label' => 'IPs geolocalizados', 'value' => (string)count($geoPoints)),
@@ -557,7 +663,7 @@ echo flow_render_panel('Mapa global de presenca', flow_noc_render_world_map($geo
 echo flow_render_panel('Hotspots por pais', flow_noc_country_cards($countryTotals), 'fa-map-marker');
 echo flow_render_panel('ASN remotos dominantes', flow_noc_asn_cards($traceRows), 'fa-signal');
 echo flow_render_panel('Operadoras / orgs remotas', flow_noc_operator_cards($traceRows), 'fa-building');
-echo flow_render_panel('Feed de rastreabilidade', flow_noc_trace_table($traceRows), 'fa-sitemap');
+echo flow_render_panel('Feed de rastreabilidade', flow_noc_trace_table($traceRows, $dnsMap), 'fa-sitemap');
 echo '</div>';
 echo '</div>';
 

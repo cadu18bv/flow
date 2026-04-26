@@ -66,8 +66,106 @@ function flow_ddos_bgp_he($asn) {
     return '<a class="flow-inline-asn" href="' . htmlspecialchars($url) . '" target="_blank" rel="noopener noreferrer">AS' . htmlspecialchars((string)$asn) . '</a>';
 }
 
-function flow_ddos_ip_cell($ip, $asn) {
-    return '<div class="flow-ip-cell"><strong>' . htmlspecialchars((string)$ip) . '</strong>' . flow_ddos_bgp_he($asn) . '</div>';
+function flow_ddos_dns_cache_path() {
+    return flow_runtime_dir() . DIRECTORY_SEPARATOR . 'flow_dns_cache.json';
+}
+
+function flow_ddos_dns_cache_read() {
+    $path = flow_ddos_dns_cache_path();
+    if (!is_file($path)) {
+        return array();
+    }
+    $json = @file_get_contents($path);
+    if ($json === false || trim((string)$json) === '') {
+        return array();
+    }
+    $data = json_decode($json, true);
+    return is_array($data) ? $data : array();
+}
+
+function flow_ddos_dns_cache_write($cache) {
+    $dir = flow_runtime_dir();
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    if (!is_dir($dir) || !is_writable($dir)) {
+        return;
+    }
+    @file_put_contents(flow_ddos_dns_cache_path(), json_encode($cache));
+}
+
+function flow_ddos_resolve_hostname($ip, &$cache) {
+    $ip = trim((string)$ip);
+    if ($ip === '') {
+        return '';
+    }
+
+    if (isset($cache[$ip]) && isset($cache[$ip]['updated_at']) && ((time() - (int)$cache[$ip]['updated_at']) < 86400)) {
+        return isset($cache[$ip]['host']) ? (string)$cache[$ip]['host'] : '';
+    }
+
+    $host = @gethostbyaddr($ip);
+    if (!is_string($host) || $host === '' || strcasecmp($host, $ip) === 0) {
+        $host = '';
+    }
+    $cache[$ip] = array(
+        'host' => $host,
+        'updated_at' => time(),
+    );
+    return $host;
+}
+
+function flow_ddos_ip_cell($ip, $asn, $dnsMap = array()) {
+    $ipText = trim((string)$ip);
+    $host = isset($dnsMap[$ipText]) ? trim((string)$dnsMap[$ipText]) : '';
+    $html = '<div class="flow-ip-cell"><strong>' . htmlspecialchars($ipText) . '</strong>' . flow_ddos_bgp_he($asn);
+    if ($host !== '') {
+        $html .= '<small>' . htmlspecialchars($host) . '</small>';
+    }
+    $html .= '</div>';
+    return $html;
+}
+
+function flow_ddos_signature_from_flow_type($flowType) {
+    $flowType = trim(strtolower((string)$flowType));
+    if ($flowType === '') {
+        return array('proto' => 'n/d', 'port' => 'n/d');
+    }
+
+    $proto = 'n/d';
+    $port = 'n/d';
+
+    if (preg_match('/\b(tcp|udp|icmp|gre|sctp)\b/i', $flowType, $m)) {
+        $proto = strtoupper($m[1]);
+    }
+    if (preg_match('/(?:port|dport|dstport|:)\s*([0-9]{1,5})/i', $flowType, $m)) {
+        $port = $m[1];
+    } elseif (preg_match('/\b([0-9]{2,5})\b/', $flowType, $m)) {
+        $port = $m[1];
+    }
+
+    return array('proto' => $proto, 'port' => $port);
+}
+
+function flow_ddos_attack_kind($row) {
+    $sources = isset($row['unique_sources']) ? (int)$row['unique_sources'] : 0;
+    $sourceAsn = isset($row['unique_source_asns']) ? (int)$row['unique_source_asns'] : 0;
+    $samples = isset($row['total_samples']) ? (int)$row['total_samples'] : 0;
+    $minutes = isset($row['active_minutes']) ? (int)$row['active_minutes'] : 0;
+
+    if ($sources >= 150 && $sourceAsn >= 20) {
+        return 'DDoS distribuido volumetrico';
+    }
+    if ($sources >= 60 && $minutes > 0 && $minutes <= 6) {
+        return 'Burst distribuido';
+    }
+    if ($samples >= 20000 && $sources >= 20) {
+        return 'Flood de alta taxa';
+    }
+    if ($sources >= 20 && $sourceAsn <= 3) {
+        return 'Concentrado (origens correlatas)';
+    }
+    return 'Anomalia de trafego';
 }
 
 function flow_ddos_value_chip($label, $value) {
@@ -115,7 +213,8 @@ function flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit) {
             SUM(bytes) AS total_bytes,
             SUM(samples) AS total_samples,
             MAX(bytes) AS peak_bytes,
-            COUNT(DISTINCT minute_ts) AS active_minutes
+            COUNT(DISTINCT minute_ts) AS active_minutes,
+            MAX(flow_type) AS flow_type
         FROM flow_events
         WHERE minute_ts >= :start
           " . flow_ddos_link_clause($selectedLinks, 'target_link_') . "
@@ -157,7 +256,8 @@ function flow_ddos_query_attackers($db, $windowStart, $selectedLinks, $limit) {
             SUM(bytes) AS total_bytes,
             SUM(samples) AS total_samples,
             MAX(bytes) AS peak_bytes,
-            COUNT(DISTINCT minute_ts) AS active_minutes
+            COUNT(DISTINCT minute_ts) AS active_minutes,
+            MAX(flow_type) AS flow_type
         FROM flow_events
         WHERE minute_ts >= :start
           " . flow_ddos_link_clause($selectedLinks, 'attacker_link_') . "
@@ -198,7 +298,8 @@ function flow_ddos_query_bursts($db, $windowStart, $selectedLinks, $limit) {
             MAX(dst_asn) AS dst_asn,
             COUNT(DISTINCT src_ip) AS unique_sources,
             SUM(bytes) AS total_bytes,
-            SUM(samples) AS total_samples
+            SUM(samples) AS total_samples,
+            MAX(flow_type) AS flow_type
         FROM flow_events
         WHERE minute_ts >= :start
           " . flow_ddos_link_clause($selectedLinks, 'burst_link_') . "
@@ -230,6 +331,50 @@ function flow_ddos_query_bursts($db, $windowStart, $selectedLinks, $limit) {
     return $rows;
 }
 
+function flow_ddos_query_suspect_flows($db, $windowStart, $selectedLinks, $limit) {
+    $sql = "
+        SELECT
+            COALESCE(NULLIF(src_ip, ''), '0.0.0.0') AS src_ip,
+            MAX(src_asn) AS src_asn,
+            COALESCE(NULLIF(dst_ip, ''), '0.0.0.0') AS dst_ip,
+            MAX(dst_asn) AS dst_asn,
+            link_tag,
+            MAX(flow_type) AS flow_type,
+            SUM(bytes) AS total_bytes,
+            SUM(samples) AS total_samples,
+            MIN(minute_ts) AS first_seen,
+            MAX(minute_ts) AS last_seen,
+            COUNT(DISTINCT minute_ts) AS active_minutes
+        FROM flow_events
+        WHERE minute_ts >= :start
+          " . flow_ddos_link_clause($selectedLinks, 'flow_link_') . "
+        GROUP BY src_ip, dst_ip, link_tag
+        HAVING SUM(bytes) > 0 OR SUM(samples) > 0
+        ORDER BY total_samples DESC, total_bytes DESC
+        LIMIT :limit
+    ";
+
+    $stmt = @$db->prepare($sql);
+    if (!$stmt) {
+        return array();
+    }
+
+    $stmt->bindValue(':start', (int)$windowStart, SQLITE3_INTEGER);
+    $stmt->bindValue(':limit', (int)$limit, SQLITE3_INTEGER);
+    flow_ddos_bind_links($stmt, $selectedLinks, 'flow_link_');
+
+    $result = @$stmt->execute();
+    if ($result === false) {
+        return array();
+    }
+
+    $rows = array();
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $rows[] = $row;
+    }
+    return $rows;
+}
+
 function flow_ddos_overview($targets, $attackers, $bursts) {
     $victims = 0;
     $highFanout = 0;
@@ -258,15 +403,22 @@ function flow_ddos_overview($targets, $attackers, $bursts) {
     );
 }
 
-function flow_ddos_targets_table($targets) {
+function flow_ddos_targets_table($targets, $dnsMap = array()) {
+    if (empty($dnsMap) && isset($GLOBALS['flow_ddos_dns_map']) && is_array($GLOBALS['flow_ddos_dns_map'])) {
+        $dnsMap = $GLOBALS['flow_ddos_dns_map'];
+    }
     if (empty($targets)) {
         return flow_render_empty_state('Sem alvos em destaque', 'Nenhum IP de destino concentrou volume anormal de origens na janela selecionada.');
     }
 
     $rows = array();
     foreach ($targets as $row) {
+        $sig = flow_ddos_signature_from_flow_type(isset($row['flow_type']) ? $row['flow_type'] : '');
         $rows[] = array(
-            flow_ddos_ip_cell($row['ip'], $row['asn']),
+            flow_ddos_ip_cell($row['ip'], $row['asn'], $dnsMap),
+            htmlspecialchars(flow_ddos_attack_kind($row)),
+            htmlspecialchars((string)$sig['proto']),
+            htmlspecialchars((string)$sig['port']),
             htmlspecialchars((string)$row['unique_sources']),
             htmlspecialchars((string)$row['unique_source_asns']),
             htmlspecialchars((string)$row['links']),
@@ -278,20 +430,26 @@ function flow_ddos_targets_table($targets) {
     }
 
     return flow_ddos_render_table(
-        array('IP sob ataque', 'Fontes unicas', 'ASN remotos', 'Links', 'Bytes', 'Samples', 'Pico', 'Persistencia'),
+        array('Destino sob ataque', 'Tipo heuristico', 'Protocolo', 'Porta', 'Fontes unicas', 'ASN remotos', 'Links', 'Bytes', 'Samples', 'Pico', 'Persistencia'),
         $rows
     );
 }
 
-function flow_ddos_attackers_table($attackers) {
+function flow_ddos_attackers_table($attackers, $dnsMap = array()) {
+    if (empty($dnsMap) && isset($GLOBALS['flow_ddos_dns_map']) && is_array($GLOBALS['flow_ddos_dns_map'])) {
+        $dnsMap = $GLOBALS['flow_ddos_dns_map'];
+    }
     if (empty($attackers)) {
         return flow_render_empty_state('Sem emissores em destaque', 'Nenhum IP de origem apresentou fan-out expressivo na janela analisada.');
     }
 
     $rows = array();
     foreach ($attackers as $row) {
+        $sig = flow_ddos_signature_from_flow_type(isset($row['flow_type']) ? $row['flow_type'] : '');
         $rows[] = array(
-            flow_ddos_ip_cell($row['ip'], $row['asn']),
+            flow_ddos_ip_cell($row['ip'], $row['asn'], $dnsMap),
+            htmlspecialchars((string)$sig['proto']),
+            htmlspecialchars((string)$sig['port']),
             htmlspecialchars((string)$row['unique_targets']),
             htmlspecialchars((string)$row['links']),
             htmlspecialchars(format_bytes((float)$row['total_bytes'])),
@@ -302,23 +460,29 @@ function flow_ddos_attackers_table($attackers) {
     }
 
     return flow_ddos_render_table(
-        array('IP emissor', 'Destinos unicos', 'Links', 'Bytes', 'Samples', 'Pico', 'Persistencia'),
+        array('Origem suspeita', 'Protocolo', 'Porta', 'Destinos unicos', 'Links', 'Bytes', 'Samples', 'Pico', 'Persistencia'),
         $rows
     );
 }
 
-function flow_ddos_burst_cards($bursts) {
+function flow_ddos_burst_cards($bursts, $dnsMap = array()) {
+    if (empty($dnsMap) && isset($GLOBALS['flow_ddos_dns_map']) && is_array($GLOBALS['flow_ddos_dns_map'])) {
+        $dnsMap = $GLOBALS['flow_ddos_dns_map'];
+    }
     if (empty($bursts)) {
         return flow_render_empty_state('Sem bursts detectados', 'Nenhum burst expressivo foi agregado por minuto e link na janela atual.');
     }
 
     $html = '<div class="flow-threat-grid">';
     foreach ($bursts as $row) {
+        $sig = flow_ddos_signature_from_flow_type(isset($row['flow_type']) ? $row['flow_type'] : '');
         $html .= '<article class="flow-threat-card">';
         $html .= '<header><span>' . htmlspecialchars(date('d/m H:i', (int)$row['minute_ts'])) . '</span><strong>' . htmlspecialchars((string)$row['link_tag']) . '</strong></header>';
-        $html .= '<div class="flow-threat-copy">' . flow_ddos_ip_cell($row['dst_ip'], $row['dst_asn']) . '</div>';
+        $html .= '<div class="flow-threat-copy">' . flow_ddos_ip_cell($row['dst_ip'], $row['dst_asn'], $dnsMap) . '</div>';
         $html .= flow_ddos_metric_strip(array(
             array('label' => 'Fontes', 'value' => (string)$row['unique_sources']),
+            array('label' => 'Proto', 'value' => (string)$sig['proto']),
+            array('label' => 'Porta', 'value' => (string)$sig['port']),
             array('label' => 'Samples', 'value' => (string)$row['total_samples']),
             array('label' => 'Bytes', 'value' => format_bytes((float)$row['total_bytes'])),
         ));
@@ -327,6 +491,36 @@ function flow_ddos_burst_cards($bursts) {
     $html .= '</div>';
 
     return $html;
+}
+
+function flow_ddos_suspect_flows_table($flows, $dnsMap = array()) {
+    if (empty($dnsMap) && isset($GLOBALS['flow_ddos_dns_map']) && is_array($GLOBALS['flow_ddos_dns_map'])) {
+        $dnsMap = $GLOBALS['flow_ddos_dns_map'];
+    }
+    if (empty($flows)) {
+        return flow_render_empty_state('Sem fluxos suspeitos detalhados', 'Nenhum par origem/destino superou os limiares da janela atual.');
+    }
+
+    $rows = array();
+    foreach ($flows as $row) {
+        $sig = flow_ddos_signature_from_flow_type(isset($row['flow_type']) ? $row['flow_type'] : '');
+        $duration = max(1, ((int)$row['last_seen'] - (int)$row['first_seen']) / 60);
+        $rows[] = array(
+            flow_ddos_ip_cell($row['src_ip'], $row['src_asn'], $dnsMap),
+            flow_ddos_ip_cell($row['dst_ip'], $row['dst_asn'], $dnsMap),
+            htmlspecialchars((string)$sig['proto']),
+            htmlspecialchars((string)$sig['port']),
+            htmlspecialchars((string)$row['link_tag']),
+            htmlspecialchars(number_format((float)$duration, 1, ',', '.')) . ' min',
+            htmlspecialchars(format_bytes((float)$row['total_bytes'])),
+            htmlspecialchars((string)$row['total_samples']),
+        );
+    }
+
+    return flow_ddos_render_table(
+        array('Origem', 'Destino', 'Protocolo', 'Porta', 'Link', 'Duracao', 'Bytes', 'Samples'),
+        $rows
+    );
 }
 
 $hours = isset($_GET['numhours']) ? (int)$_GET['numhours'] : 24;
@@ -342,6 +536,7 @@ list($db, $dbError) = flow_ddos_db_open();
 $targets = array();
 $attackers = array();
 $bursts = array();
+$suspectFlows = array();
 $dbHealth = array('ready' => false, 'rows' => 0, 'last_seen' => null);
 
 if ($db) {
@@ -350,9 +545,42 @@ if ($db) {
         $targets = flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit);
         $attackers = flow_ddos_query_attackers($db, $windowStart, $selectedLinks, $limit);
         $bursts = flow_ddos_query_bursts($db, $windowStart, $selectedLinks, 12);
+        $suspectFlows = flow_ddos_query_suspect_flows($db, $windowStart, $selectedLinks, max(40, $limit * 2));
     }
     $db->close();
 }
+
+$dnsCache = flow_ddos_dns_cache_read();
+$dnsMap = array();
+$dnsCandidates = array();
+foreach ($targets as $row) {
+    if (!empty($row['ip'])) {
+        $dnsCandidates[(string)$row['ip']] = true;
+    }
+}
+foreach ($attackers as $row) {
+    if (!empty($row['ip'])) {
+        $dnsCandidates[(string)$row['ip']] = true;
+    }
+}
+foreach ($bursts as $row) {
+    if (!empty($row['dst_ip'])) {
+        $dnsCandidates[(string)$row['dst_ip']] = true;
+    }
+}
+foreach ($suspectFlows as $row) {
+    if (!empty($row['src_ip'])) {
+        $dnsCandidates[(string)$row['src_ip']] = true;
+    }
+    if (!empty($row['dst_ip'])) {
+        $dnsCandidates[(string)$row['dst_ip']] = true;
+    }
+}
+foreach (array_slice(array_keys($dnsCandidates), 0, 180) as $ip) {
+    $dnsMap[$ip] = flow_ddos_resolve_hostname($ip, $dnsCache);
+}
+$GLOBALS['flow_ddos_dns_map'] = $dnsMap;
+flow_ddos_dns_cache_write($dnsCache);
 
 $overview = flow_ddos_overview($targets, $attackers, $bursts);
 $heroStats = array(
@@ -384,8 +612,9 @@ echo '</div>';
 
 echo '<div class="flow-stack">';
 echo flow_render_panel('IPs sob maior pressão', flow_ddos_targets_table($targets), 'fa-crosshairs');
-echo flow_render_panel('Origens com maior fan-out', flow_ddos_attackers_table($attackers), 'fa-bullhorn');
-echo flow_render_panel('Burst timeline operacional', flow_ddos_burst_cards($bursts), 'fa-bolt');
+echo flow_render_panel('Fluxos suspeitos detalhados', flow_ddos_suspect_flows_table($suspectFlows, $dnsMap), 'fa-random');
+echo flow_render_panel('Origens com maior fan-out', flow_ddos_attackers_table($attackers, $dnsMap), 'fa-bullhorn');
+echo flow_render_panel('Burst timeline operacional', flow_ddos_burst_cards($bursts, $dnsMap), 'fa-bolt');
 echo '</div>';
 echo '</div>';
 
