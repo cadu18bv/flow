@@ -905,6 +905,51 @@ body[data-theme="light"] .flow-log-console {
   border: 1px solid rgba(77, 212, 255, 0.10);
 }
 
+.flow-link-graph-frame {
+  max-height: 320px;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.flow-link-graph-frame img {
+  display: block;
+}
+
+.flow-link-legend-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.flow-link-legend-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(77, 212, 255, 0.14);
+  background: rgba(77, 212, 255, 0.08);
+  line-height: 1.1;
+}
+
+.flow-link-legend-pill i {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.15);
+}
+
+.flow-link-legend-pill strong {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.flow-link-legend-pill small {
+  color: var(--flow-muted);
+  font-size: 11px;
+}
+
 .flow-graph-label {
   margin-bottom: 10px;
   color: var(--flow-muted);
@@ -1108,6 +1153,11 @@ body[data-theme="light"] .flow-graph-stat-kpi {
 
 .flow-graph-drill:focus {
   outline: none;
+}
+
+body[data-theme="light"] .flow-link-legend-pill {
+  background: rgba(20, 123, 181, 0.08);
+  border-color: rgba(20, 123, 181, 0.16);
 }
 
 .flow-provider-card {

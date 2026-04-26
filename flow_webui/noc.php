@@ -9,8 +9,15 @@ function flow_noc_db_open() {
 }
 
 function flow_noc_db_health($db) {
+    $cacheHit = false;
+    $cached = flow_cache_get('noc_db_health', array('backend' => flow_events_backend()), 15, $cacheHit);
+    if ($cacheHit && is_array($cached)) {
+        return $cached;
+    }
+
     $health = array('ready' => false, 'rows' => 0, 'last_seen' => null);
     if (!flow_events_has_table($db, 'flow_events')) {
+        flow_cache_set('noc_db_health', array('backend' => flow_events_backend()), $health);
         return $health;
     }
     $health['ready'] = true;
@@ -19,6 +26,7 @@ function flow_noc_db_health($db) {
         $health['rows'] = isset($row['rows']) ? (int)$row['rows'] : 0;
         $health['last_seen'] = isset($row['last_seen']) && $row['last_seen'] !== null ? (int)$row['last_seen'] : null;
     }
+    flow_cache_set('noc_db_health', array('backend' => flow_events_backend()), $health);
     return $health;
 }
 
@@ -274,6 +282,13 @@ function flow_noc_geolocate_ip($ip, &$cache) {
 }
 
 function flow_noc_query_remote_ips($db, $windowStart, $selectedLinks, $limit) {
+    $cachePayload = array('start' => (int)$windowStart, 'links' => array_values((array)$selectedLinks), 'limit' => (int)$limit, 'backend' => flow_events_backend());
+    $cacheHit = false;
+    $cached = flow_cache_get('noc_remote_ips', $cachePayload, 25, $cacheHit);
+    if ($cacheHit && is_array($cached)) {
+        return $cached;
+    }
+
     $sql = "
         SELECT
             COALESCE(NULLIF(CASE WHEN lower(direction) = 'out' THEN dst_ip ELSE src_ip END, ''), '0.0.0.0') AS remote_ip,
@@ -311,6 +326,7 @@ function flow_noc_query_remote_ips($db, $windowStart, $selectedLinks, $limit) {
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
         $rows[] = $row;
     }
+    flow_cache_set('noc_remote_ips', $cachePayload, $rows);
     return $rows;
 }
 

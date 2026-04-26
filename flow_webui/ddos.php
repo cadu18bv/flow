@@ -9,8 +9,15 @@ function flow_ddos_db_open() {
 }
 
 function flow_ddos_db_health($db) {
+    $cacheHit = false;
+    $cached = flow_cache_get('ddos_db_health', array('backend' => flow_events_backend()), 15, $cacheHit);
+    if ($cacheHit && is_array($cached)) {
+        return $cached;
+    }
+
     $health = array('ready' => false, 'rows' => 0, 'last_seen' => null);
     if (!flow_events_has_table($db, 'flow_events')) {
+        flow_cache_set('ddos_db_health', array('backend' => flow_events_backend()), $health);
         return $health;
     }
     $health['ready'] = true;
@@ -19,6 +26,7 @@ function flow_ddos_db_health($db) {
         $health['rows'] = isset($row['rows']) ? (int)$row['rows'] : 0;
         $health['last_seen'] = isset($row['last_seen']) && $row['last_seen'] !== null ? (int)$row['last_seen'] : null;
     }
+    flow_cache_set('ddos_db_health', array('backend' => flow_events_backend()), $health);
     return $health;
 }
 
@@ -203,6 +211,13 @@ function flow_ddos_metric_strip($items) {
 }
 
 function flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit) {
+    $cachePayload = array('start' => (int)$windowStart, 'links' => array_values((array)$selectedLinks), 'limit' => (int)$limit, 'backend' => flow_events_backend());
+    $cacheHit = false;
+    $cached = flow_cache_get('ddos_targets', $cachePayload, 20, $cacheHit);
+    if ($cacheHit && is_array($cached)) {
+        return $cached;
+    }
+
     $sql = "
         SELECT
             COALESCE(NULLIF(dst_ip, ''), '0.0.0.0') AS ip,
@@ -243,10 +258,18 @@ function flow_ddos_query_targets($db, $windowStart, $selectedLinks, $limit) {
         $rows[] = $row;
     }
 
+    flow_cache_set('ddos_targets', $cachePayload, $rows);
     return $rows;
 }
 
 function flow_ddos_query_attackers($db, $windowStart, $selectedLinks, $limit) {
+    $cachePayload = array('start' => (int)$windowStart, 'links' => array_values((array)$selectedLinks), 'limit' => (int)$limit, 'backend' => flow_events_backend());
+    $cacheHit = false;
+    $cached = flow_cache_get('ddos_attackers', $cachePayload, 20, $cacheHit);
+    if ($cacheHit && is_array($cached)) {
+        return $cached;
+    }
+
     $sql = "
         SELECT
             COALESCE(NULLIF(src_ip, ''), '0.0.0.0') AS ip,
@@ -286,10 +309,18 @@ function flow_ddos_query_attackers($db, $windowStart, $selectedLinks, $limit) {
         $rows[] = $row;
     }
 
+    flow_cache_set('ddos_attackers', $cachePayload, $rows);
     return $rows;
 }
 
 function flow_ddos_query_bursts($db, $windowStart, $selectedLinks, $limit) {
+    $cachePayload = array('start' => (int)$windowStart, 'links' => array_values((array)$selectedLinks), 'limit' => (int)$limit, 'backend' => flow_events_backend());
+    $cacheHit = false;
+    $cached = flow_cache_get('ddos_bursts', $cachePayload, 20, $cacheHit);
+    if ($cacheHit && is_array($cached)) {
+        return $cached;
+    }
+
     $sql = "
         SELECT
             minute_ts,
@@ -328,10 +359,18 @@ function flow_ddos_query_bursts($db, $windowStart, $selectedLinks, $limit) {
         $rows[] = $row;
     }
 
+    flow_cache_set('ddos_bursts', $cachePayload, $rows);
     return $rows;
 }
 
 function flow_ddos_query_suspect_flows($db, $windowStart, $selectedLinks, $limit) {
+    $cachePayload = array('start' => (int)$windowStart, 'links' => array_values((array)$selectedLinks), 'limit' => (int)$limit, 'backend' => flow_events_backend());
+    $cacheHit = false;
+    $cached = flow_cache_get('ddos_suspects', $cachePayload, 20, $cacheHit);
+    if ($cacheHit && is_array($cached)) {
+        return $cached;
+    }
+
     $sql = "
         SELECT
             COALESCE(NULLIF(src_ip, ''), '0.0.0.0') AS src_ip,
@@ -372,6 +411,7 @@ function flow_ddos_query_suspect_flows($db, $windowStart, $selectedLinks, $limit
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
         $rows[] = $row;
     }
+    flow_cache_set('ddos_suspects', $cachePayload, $rows);
     return $rows;
 }
 

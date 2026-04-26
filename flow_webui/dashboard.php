@@ -173,6 +173,22 @@ function flow_dashboard_sum_query($db, $conditions, $bindings, $hours) {
 }
 
 function flow_dashboard_group_usage($provider, $statsfile, $selectedLinks) {
+    $cachePayload = array(
+        'provider' => isset($provider['key']) ? (string)$provider['key'] : '',
+        'statsfile' => (string)$statsfile,
+        'links' => array_values((array)$selectedLinks),
+    );
+    $cacheHit = false;
+    $cached = flow_cache_get('dashboard_group_usage', $cachePayload, 30, $cacheHit);
+    if ($cacheHit) {
+        return is_array($cached) ? $cached : array(
+            'totals' => array(0, 0, 0, 0),
+            'members' => array(),
+            'dominant_asn' => 0,
+            'dominant_usage' => array(0, 0, 0, 0),
+        );
+    }
+
     $asns = isset($provider['asns']) && is_array($provider['asns']) ? $provider['asns'] : array();
     $asns = array_values(array_unique(array_map('intval', $asns)));
     if (empty($asns)) {
@@ -217,19 +233,42 @@ function flow_dashboard_group_usage($provider, $statsfile, $selectedLinks) {
         return ($left['score'] > $right['score']) ? -1 : 1;
     });
 
-    return array(
+    $result = array(
         'totals' => $totals,
         'members' => $members,
         'dominant_asn' => $dominantAsn,
         'dominant_usage' => $dominantUsage,
     );
+    flow_cache_set('dashboard_group_usage', $cachePayload, $result);
+    return $result;
 }
 
 function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
+    $cachePayload = array(
+        'provider' => isset($provider['key']) ? (string)$provider['key'] : '',
+        'hours' => (int)$hours,
+        'links' => array_values((array)$selectedLinks),
+        'backend' => flow_events_backend(),
+    );
+    $cacheHit = false;
+    $cached = flow_cache_get('dashboard_local_cdn', $cachePayload, 25, $cacheHit);
+    if ($cacheHit) {
+        return is_array($cached) ? $cached : array(
+            'status' => 'indisponivel',
+            'classified_totals' => array(0, 0, 0, 0),
+            'pool_totals' => array(0, 0, 0, 0),
+            'shared_totals' => array(0, 0, 0, 0),
+            'links' => array(),
+            'remote_asns' => array(),
+            'prefixes' => array(),
+            'note' => 'Cache invalido para CDN local.',
+        );
+    }
+
     $profiles = flow_dashboard_local_profiles();
     $key = isset($provider['key']) ? (string)$provider['key'] : '';
     if ($key === '' || !isset($profiles[$key])) {
-        return array(
+        $result = array(
             'status' => 'nao_mapeado',
             'classified_totals' => array(0, 0, 0, 0),
             'pool_totals' => array(0, 0, 0, 0),
@@ -239,11 +278,13 @@ function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
             'prefixes' => array(),
             'note' => 'Sem perfil explicito de CDN local. O dashboard nao infere cache local automaticamente para nao misturar CDN terceiro, transito ou entrega remota.',
         );
+        flow_cache_set('dashboard_local_cdn', $cachePayload, $result);
+        return $result;
     }
 
     $profile = $profiles[$key];
     if (empty($profile['links']) && empty($profile['remote_asns']) && empty($profile['local_asns']) && empty($profile['prefixes'])) {
-        return array(
+        $result = array(
             'status' => 'incompleto',
             'classified_totals' => array(0, 0, 0, 0),
             'pool_totals' => array(0, 0, 0, 0),
@@ -253,11 +294,13 @@ function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
             'prefixes' => array(),
             'note' => 'O perfil local existe, mas ainda nao possui assinatura suficiente para uma classificacao confiavel.',
         );
+        flow_cache_set('dashboard_local_cdn', $cachePayload, $result);
+        return $result;
     }
 
     $linksFilter = !empty($selectedLinks) ? array_values(array_intersect($profile['links'], $selectedLinks)) : $profile['links'];
     if (!empty($profile['links']) && empty($linksFilter)) {
-        return array(
+        $result = array(
             'status' => 'fora_do_filtro',
             'classified_totals' => array(0, 0, 0, 0),
             'pool_totals' => array(0, 0, 0, 0),
@@ -267,11 +310,13 @@ function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
             'prefixes' => $profile['prefixes'],
             'note' => 'Os links homologados para esse CDN local ficaram fora do filtro atual.',
         );
+        flow_cache_set('dashboard_local_cdn', $cachePayload, $result);
+        return $result;
     }
 
     $db = flow_dashboard_db_open();
     if (!$db) {
-        return array(
+        $result = array(
             'status' => 'indisponivel',
             'classified_totals' => array(0, 0, 0, 0),
             'pool_totals' => array(0, 0, 0, 0),
@@ -281,6 +326,8 @@ function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
             'prefixes' => $profile['prefixes'],
             'note' => 'A base flow_events.db nao esta disponivel para validar o CDN local.',
         );
+        flow_cache_set('dashboard_local_cdn', $cachePayload, $result);
+        return $result;
     }
 
     $poolConditions = array();
@@ -301,7 +348,7 @@ function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
     $poolTotals = flow_dashboard_sum_query($db, $poolConditions, $poolBindings, $hours);
     if ($poolTotals === false) {
         $db->close();
-        return array(
+        $result = array(
             'status' => 'indisponivel',
             'classified_totals' => array(0, 0, 0, 0),
             'pool_totals' => array(0, 0, 0, 0),
@@ -311,6 +358,8 @@ function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
             'prefixes' => $profile['prefixes'],
             'note' => 'Nao foi possivel ler a malha de CDN compartilhada nesta janela.',
         );
+        flow_cache_set('dashboard_local_cdn', $cachePayload, $result);
+        return $result;
     }
 
     $classifiedConditions = $poolConditions;
@@ -357,7 +406,7 @@ function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
         $status = 'pool_sem_assinatura';
     }
 
-    return array(
+    $result = array(
         'status' => $status,
         'classified_totals' => $classifiedTotals,
         'pool_totals' => $poolTotals,
@@ -367,6 +416,8 @@ function flow_dashboard_local_cdn_usage($provider, $hours, $selectedLinks) {
         'prefixes' => $profile['prefixes'],
         'note' => $profile['note'] !== '' ? $profile['note'] : 'CDN local contabilizado apenas por perfil explicito de links e/ou ASN homologados.',
     );
+    flow_cache_set('dashboard_local_cdn', $cachePayload, $result);
+    return $result;
 }
 
 function flow_dashboard_member_badges($members) {

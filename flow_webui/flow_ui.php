@@ -47,6 +47,198 @@ function flow_as_name_overrides() {
     return $overrides;
 }
 
+function flow_cache_enabled() {
+    $flag = strtolower(trim((string)flow_env_setting('ASSTATS_UI_CACHE', '1')));
+    return !in_array($flag, array('0', 'off', 'false', 'no'), true);
+}
+
+function flow_cache_namespace_dir($namespace) {
+    $namespace = preg_replace('/[^a-zA-Z0-9_\-]/', '_', (string)$namespace);
+    $dir = flow_runtime_dir() . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . $namespace;
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    return $dir;
+}
+
+function flow_cache_key($payload) {
+    return sha1(serialize($payload));
+}
+
+function flow_cache_get($namespace, $payload, $ttl, &$hit = null) {
+    $hit = false;
+    if (!flow_cache_enabled()) {
+        return null;
+    }
+    $file = flow_cache_namespace_dir($namespace) . DIRECTORY_SEPARATOR . flow_cache_key($payload) . '.cache';
+    if (!is_file($file) || !is_readable($file)) {
+        return null;
+    }
+    $raw = @file_get_contents($file);
+    if (!is_string($raw) || $raw === '') {
+        return null;
+    }
+    $entry = @unserialize($raw);
+    if (!is_array($entry) || !isset($entry['stored_at']) || !array_key_exists('value', $entry)) {
+        return null;
+    }
+    if (((int)$entry['stored_at'] + max(1, (int)$ttl)) < time()) {
+        return null;
+    }
+    $hit = true;
+    return $entry['value'];
+}
+
+function flow_cache_set($namespace, $payload, $value) {
+    if (!flow_cache_enabled()) {
+        return;
+    }
+    $file = flow_cache_namespace_dir($namespace) . DIRECTORY_SEPARATOR . flow_cache_key($payload) . '.cache';
+    $entry = array(
+        'stored_at' => time(),
+        'value' => $value,
+    );
+    @file_put_contents($file, serialize($entry), LOCK_EX);
+}
+
+function flow_bgphe_cache_path() {
+    $candidates = array(
+        '/data/asstats/asstats/cache/asn_bgphe_cache.json',
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'asstats' . DIRECTORY_SEPARATOR . 'cache' . DIRECTORY_SEPARATOR . 'asn_bgphe_cache.json',
+        sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'flow_asn_bgphe_cache.json',
+    );
+
+    foreach ($candidates as $path) {
+        $dir = dirname($path);
+        if (is_dir($dir) || @mkdir($dir, 0775, true)) {
+            return $path;
+        }
+    }
+
+    return $candidates[count($candidates) - 1];
+}
+
+function flow_bgphe_cache_load() {
+    static $loaded = false;
+    static $cache = array();
+
+    if ($loaded) {
+        return $cache;
+    }
+    $loaded = true;
+
+    $path = flow_bgphe_cache_path();
+    if (!is_file($path) || !is_readable($path)) {
+        return $cache;
+    }
+
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || trim($raw) === '') {
+        return $cache;
+    }
+
+    $decoded = @json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return $cache;
+    }
+
+    foreach ($decoded as $asn => $item) {
+        $asnInt = (int)$asn;
+        if ($asnInt <= 0 || !is_array($item)) {
+            continue;
+        }
+        $name = isset($item['name']) ? trim((string)$item['name']) : '';
+        $updated = isset($item['updated']) ? (int)$item['updated'] : 0;
+        if ($name !== '') {
+            $cache[$asnInt] = array('name' => $name, 'updated' => $updated);
+        }
+    }
+
+    return $cache;
+}
+
+function flow_bgphe_cache_save($cache) {
+    if (!is_array($cache)) {
+        return;
+    }
+    $path = flow_bgphe_cache_path();
+    @file_put_contents($path, json_encode($cache, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+}
+
+function flow_bgphe_extract_as_name($html, $asn) {
+    $asn = (int)$asn;
+    if (!is_string($html) || trim($html) === '' || $asn <= 0) {
+        return '';
+    }
+
+    $patterns = array(
+        '/<title>\s*AS' . $asn . '\s+([^<]+?)\s*-\s*bgp\.he/iu',
+        '/<h1[^>]*>\s*AS' . $asn . '\s+([^<]+?)\s*<\/h1>/iu',
+    );
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $html, $match)) {
+            $name = trim(html_entity_decode((string)$match[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            if ($name !== '') {
+                return $name;
+            }
+        }
+    }
+
+    return '';
+}
+
+function flow_fetch_as_name_from_bgphe($asn) {
+    $asn = (int)$asn;
+    if ($asn <= 0) {
+        return '';
+    }
+    static $networkDisabled = false;
+
+    $cache = flow_bgphe_cache_load();
+    $ttl = 7 * 24 * 3600;
+    if (isset($cache[$asn])) {
+        $cachedName = trim((string)$cache[$asn]['name']);
+        $cachedAt = isset($cache[$asn]['updated']) ? (int)$cache[$asn]['updated'] : 0;
+        if ($cachedName !== '' && $cachedAt > (time() - $ttl)) {
+            return $cachedName;
+        }
+    }
+    $allowLiveLookup = strtolower(trim((string)flow_env_setting('ASSTATS_BGPHE_LIVE_LOOKUP', '0')));
+    if (in_array($allowLiveLookup, array('0', 'off', 'false', 'no'), true)) {
+        return isset($cache[$asn]['name']) ? trim((string)$cache[$asn]['name']) : '';
+    }
+    if ($networkDisabled) {
+        return isset($cache[$asn]['name']) ? trim((string)$cache[$asn]['name']) : '';
+    }
+
+    $url = 'https://bgp.he.net/AS' . $asn;
+    $context = stream_context_create(array(
+        'http' => array(
+            'method' => 'GET',
+            'timeout' => 2,
+            'header' => "User-Agent: Flow-Observatory/1.0\r\nAccept: text/html\r\n",
+        ),
+        'ssl' => array(
+            'verify_peer' => true,
+            'verify_peer_name' => true,
+        ),
+    ));
+    $html = @file_get_contents($url, false, $context);
+    if (!is_string($html) || trim($html) === '') {
+        $networkDisabled = true;
+        return isset($cache[$asn]['name']) ? trim((string)$cache[$asn]['name']) : '';
+    }
+
+    $name = flow_bgphe_extract_as_name($html, $asn);
+    if ($name === '') {
+        return isset($cache[$asn]['name']) ? trim((string)$cache[$asn]['name']) : '';
+    }
+
+    $cache[$asn] = array('name' => $name, 'updated' => time());
+    flow_bgphe_cache_save($cache);
+    return $name;
+}
+
 function flow_enrich_as_info($as, $asinfo) {
     $as = (int)$as;
     if (!is_array($asinfo)) {
@@ -56,6 +248,12 @@ function flow_enrich_as_info($as, $asinfo) {
     $overrides = flow_as_name_overrides();
     if ($as > 0 && isset($overrides[$as]) && trim((string)$overrides[$as]) !== '') {
         $descr = trim((string)$overrides[$as]);
+    }
+    if ($as > 0 && !isset($overrides[$as])) {
+        $bgpheName = flow_fetch_as_name_from_bgphe($as);
+        if ($bgpheName !== '') {
+            $descr = $bgpheName;
+        }
     }
     if ($descr === '') {
         $descr = 'AS' . $as;
@@ -400,29 +598,148 @@ function flow_render_graph_stats($stats) {
     return $html;
 }
 
+function flow_knownlinks_index() {
+    static $index = null;
+    if ($index !== null) {
+        return $index;
+    }
+    $index = array();
+    if (!function_exists('getknownlinks')) {
+        return $index;
+    }
+    $knownlinks = getknownlinks();
+    if (!is_array($knownlinks)) {
+        return $index;
+    }
+    foreach ($knownlinks as $link) {
+        if (!is_array($link) || !isset($link['tag'])) {
+            continue;
+        }
+        $index[(string)$link['tag']] = $link;
+    }
+    return $index;
+}
+
+function flow_link_sampling_factor($linkTag) {
+    $index = flow_knownlinks_index();
+    if (!isset($index[(string)$linkTag]) || !is_array($index[(string)$linkTag])) {
+        return 1.0;
+    }
+    $link = $index[(string)$linkTag];
+    $candidateKeys = array('sampling', 'samplingrate', 'linksamplingrate', 'sample');
+    foreach ($candidateKeys as $key) {
+        if (!isset($link[$key])) {
+            continue;
+        }
+        $value = (float)$link[$key];
+        if ($value > 0) {
+            return $value;
+        }
+    }
+    return 1.0;
+}
+
+function flow_link_palette_colors() {
+    return array(
+        'A6CEE3', '1F78B4', 'B2DF8A', '33A02C', 'FB9A99',
+        'E31A1C', 'FDBF6F', 'FF7F00', 'CAB2D6', '6A3D9A',
+    );
+}
+
 function flow_fetch_link_flow_stats($linkTag, $ipversion, $hours) {
+    static $memo = array();
+    $memoKey = (string)$linkTag . '|' . (int)$ipversion . '|' . (int)$hours;
+    if (array_key_exists($memoKey, $memo)) {
+        return $memo[$memoKey];
+    }
+
+    $cacheHit = false;
+    $cachedValue = flow_cache_get(
+        'link_flow_stats',
+        array(
+            'link' => (string)$linkTag,
+            'ip' => (int)$ipversion,
+            'hours' => (int)$hours,
+            'backend' => flow_events_backend(),
+        ),
+        20,
+        $cacheHit
+    );
+    if ($cacheHit) {
+        $memo[$memoKey] = $cachedValue;
+        return $cachedValue;
+    }
+
     if (!flow_events_available()) {
+        $memo[$memoKey] = null;
         return null;
     }
 
     $dbError = null;
     $db = flow_events_open_connection($dbError);
     if (!$db) {
+        $memo[$memoKey] = null;
         return null;
     }
 
     $start = time() - ((int)$hours * 3600);
-    $stmt = @$db->prepare(
-        "SELECT minute_ts, direction, SUM(bytes) AS total_bytes
+    $samplingFactor = flow_link_sampling_factor($linkTag);
+    $asnExpression = "CASE WHEN direction = 'out' THEN dst_asn ELSE src_asn END";
+
+    $topStmt = @$db->prepare(
+        "SELECT {$asnExpression} AS asn, SUM(bytes) AS total_bytes
          FROM flow_events
          WHERE minute_ts >= :start
            AND link_tag = :link_tag
            AND ip_version = :ip_version
-         GROUP BY minute_ts, direction
+         GROUP BY {$asnExpression}
+         HAVING {$asnExpression} > 0
+         ORDER BY total_bytes DESC
+         LIMIT 10"
+    );
+    if (!$topStmt) {
+        $db->close();
+        $memo[$memoKey] = null;
+        return null;
+    }
+    $topStmt->bindValue(':start', $start, SQLITE3_INTEGER);
+    $topStmt->bindValue(':link_tag', (string)$linkTag, SQLITE3_TEXT);
+    $topStmt->bindValue(':ip_version', (int)$ipversion, SQLITE3_INTEGER);
+    $topResult = @$topStmt->execute();
+    if ($topResult === false) {
+        $db->close();
+        $memo[$memoKey] = null;
+        return null;
+    }
+
+    $topAsns = array();
+    while ($row = $topResult->fetchArray(SQLITE3_ASSOC)) {
+        $asn = isset($row['asn']) ? (int)$row['asn'] : 0;
+        if ($asn > 0) {
+            $topAsns[] = $asn;
+        }
+    }
+    if (empty($topAsns)) {
+        $db->close();
+        flow_cache_set('link_flow_stats', array('link' => (string)$linkTag, 'ip' => (int)$ipversion, 'hours' => (int)$hours, 'backend' => flow_events_backend()), null);
+        $memo[$memoKey] = null;
+        return null;
+    }
+
+    $asnList = implode(',', array_map('intval', $topAsns));
+    $stmt = @$db->prepare(
+        "SELECT minute_ts, direction, {$asnExpression} AS asn, SUM(bytes) AS total_bytes
+         FROM flow_events
+         WHERE minute_ts >= :start
+           AND link_tag = :link_tag
+           AND ip_version = :ip_version
+           AND {$asnExpression} IN ({$asnList})
+         GROUP BY minute_ts, direction, {$asnExpression}
          ORDER BY minute_ts ASC"
     );
     if (!$stmt) {
         $db->close();
+        $memo[$memoKey] = null;
         return null;
     }
 
@@ -432,27 +749,41 @@ function flow_fetch_link_flow_stats($linkTag, $ipversion, $hours) {
     $result = @$stmt->execute();
     if ($result === false) {
         $db->close();
+        $memo[$memoKey] = null;
         return null;
     }
 
     $timeline = array();
+    $asnTotals = array();
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
         $minute = (int)$row['minute_ts'];
         if (!isset($timeline[$minute])) {
             $timeline[$minute] = array('in' => 0.0, 'out' => 0.0);
         }
         $direction = strtolower((string)$row['direction']) === 'out' ? 'out' : 'in';
-        $timeline[$minute][$direction] += (((float)$row['total_bytes']) * 8.0) / 60.0;
+        $scaledBytes = ((float)$row['total_bytes']) * $samplingFactor;
+        $timeline[$minute][$direction] += ($scaledBytes * 8.0) / 60.0;
+
+        $asn = isset($row['asn']) ? (int)$row['asn'] : 0;
+        if ($asn > 0) {
+            if (!isset($asnTotals[$asn])) {
+                $asnTotals[$asn] = 0.0;
+            }
+            $asnTotals[$asn] += $scaledBytes;
+        }
     }
     $db->close();
 
     if (empty($timeline)) {
+        flow_cache_set('link_flow_stats', array('link' => (string)$linkTag, 'ip' => (int)$ipversion, 'hours' => (int)$hours, 'backend' => flow_events_backend()), null);
+        $memo[$memoKey] = null;
         return null;
     }
 
     $stats = array(
         'in' => array('min' => null, 'max' => null, 'current' => null),
         'out' => array('min' => null, 'max' => null, 'current' => null),
+        'legend' => array(),
     );
 
     foreach ($timeline as $point) {
@@ -468,6 +799,33 @@ function flow_fetch_link_flow_stats($linkTag, $ipversion, $hours) {
         }
     }
 
+    if (!empty($asnTotals)) {
+        arsort($asnTotals, SORT_NUMERIC);
+        $palette = flow_link_palette_colors();
+        $colorIndex = 0;
+        foreach ($asnTotals as $asn => $totalBytes) {
+            $asInfo = flow_enrich_as_info((int)$asn, function_exists('getASInfo') ? getASInfo((int)$asn) : array());
+            $stats['legend'][] = array(
+                'asn' => (int)$asn,
+                'label' => isset($asInfo['descr']) ? (string)$asInfo['descr'] : ('AS' . (int)$asn),
+                'bytes' => (float)$totalBytes,
+                'color' => '#' . $palette[$colorIndex % count($palette)],
+            );
+            $colorIndex++;
+            if ($colorIndex >= 10) {
+                break;
+            }
+        }
+    }
+
+    $cachePayload = array(
+        'link' => (string)$linkTag,
+        'ip' => (int)$ipversion,
+        'hours' => (int)$hours,
+        'backend' => flow_events_backend(),
+    );
+    flow_cache_set('link_flow_stats', $cachePayload, $stats);
+    $memo[$memoKey] = $stats;
     return $stats;
 }
 
@@ -644,13 +1002,36 @@ function flow_render_dual_graph($title, $graph4, $graph6 = '') {
     return $html;
 }
 
+function flow_render_link_legend($stats) {
+    if (!is_array($stats) || empty($stats['legend']) || !is_array($stats['legend'])) {
+        return '';
+    }
+    $html = '<div class="flow-link-legend-list">';
+    foreach ($stats['legend'] as $entry) {
+        if (!is_array($entry) || empty($entry['asn'])) {
+            continue;
+        }
+        $asn = (int)$entry['asn'];
+        $label = isset($entry['label']) ? (string)$entry['label'] : ('AS' . $asn);
+        $color = isset($entry['color']) ? (string)$entry['color'] : '#7fbad9';
+        $bytes = isset($entry['bytes']) ? (float)$entry['bytes'] : 0.0;
+        $html .= '<span class="flow-link-legend-pill">';
+        $html .= '<i style="background:' . htmlspecialchars($color) . '"></i>';
+        $html .= '<strong>AS' . htmlspecialchars((string)$asn) . '</strong>';
+        $html .= '<small>' . htmlspecialchars($label) . ' · ' . htmlspecialchars(format_bytes($bytes)) . '</small>';
+        $html .= '</span>';
+    }
+    $html .= '</div>';
+    return $html;
+}
+
 function flow_render_link_card($title, $graph4, $graph6 = '', $stats4 = null, $stats6 = null) {
     $html = '<article class="flow-link-card">';
     $html .= '<header><span>' . htmlspecialchars($title) . '</span></header>';
     $html .= '<div class="flow-graph-pair">';
-    $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div>' . $graph4 . flow_render_graph_stats($stats4) . '</div>';
+    $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv4</div><div class="flow-link-graph-frame">' . $graph4 . '</div>' . flow_render_link_legend($stats4) . flow_render_graph_stats($stats4) . '</div>';
     if ($graph6 !== '') {
-        $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div>' . $graph6 . flow_render_graph_stats($stats6) . '</div>';
+        $html .= '<div class="flow-graph-card"><div class="flow-graph-label">IPv6</div><div class="flow-link-graph-frame">' . $graph6 . '</div>' . flow_render_link_legend($stats6) . flow_render_graph_stats($stats6) . '</div>';
     }
     $html .= '</div>';
     $html .= '</article>';

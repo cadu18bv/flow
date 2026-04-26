@@ -498,6 +498,16 @@ function flow_render_query_table($headers, $rows) {
 }
 
 function flow_query_pipeline_snapshot($dbPath) {
+    $cachePayload = array(
+        'db' => (string)$dbPath,
+        'backend' => flow_events_backend(),
+    );
+    $cacheHit = false;
+    $cached = flow_cache_get('ipsearch_pipeline_snapshot', $cachePayload, 15, $cacheHit);
+    if ($cacheHit && is_array($cached)) {
+        return $cached;
+    }
+
     $snapshot = array(
         'db_ready' => flow_events_available(),
         'total_rows' => 0,
@@ -506,6 +516,7 @@ function flow_query_pipeline_snapshot($dbPath) {
     );
 
     if (!$snapshot['db_ready']) {
+        flow_cache_set('ipsearch_pipeline_snapshot', $cachePayload, $snapshot);
         return $snapshot;
     }
 
@@ -513,11 +524,13 @@ function flow_query_pipeline_snapshot($dbPath) {
     $db = flow_query_open_db($dbPath, $dbError);
     if (!$db) {
         $snapshot['db_ready'] = false;
+        flow_cache_set('ipsearch_pipeline_snapshot', $cachePayload, $snapshot);
         return $snapshot;
     }
     if (!flow_query_has_events_table($db)) {
         $snapshot['db_ready'] = false;
         $db->close();
+        flow_cache_set('ipsearch_pipeline_snapshot', $cachePayload, $snapshot);
         return $snapshot;
     }
 
@@ -540,6 +553,7 @@ function flow_query_pipeline_snapshot($dbPath) {
     }
 
     $db->close();
+    flow_cache_set('ipsearch_pipeline_snapshot', $cachePayload, $snapshot);
     return $snapshot;
 }
 
