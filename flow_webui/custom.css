@@ -745,8 +745,8 @@ body[data-theme="light"] .flow-log-console {
 
 .flow-as-row {
   display: grid;
-  grid-template-columns: minmax(220px, 248px) minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
   padding: 14px;
   border: 1px solid rgba(77, 212, 255, 0.10);
   border-radius: 20px;
@@ -823,7 +823,7 @@ body[data-theme="light"] .flow-log-console {
 .flow-as-graphs,
 .flow-graph-pair {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
   gap: 10px;
 }
 
@@ -866,9 +866,9 @@ body[data-theme="light"] .flow-log-console {
 }
 
 @media (max-width: 1200px) {
-  .flow-as-row {
-    grid-template-columns: minmax(200px, 228px) minmax(0, 1fr);
-    gap: 10px;
+  .flow-as-graphs,
+  .flow-graph-pair {
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
   }
 }
 

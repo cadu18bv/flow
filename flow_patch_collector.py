@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import re
 from pathlib import Path
 
 
@@ -526,7 +527,7 @@ sub cache_flow_record {
     text = replace_all(
         text,
         "AutoCommit => 1,\n\t});\n\n\t$dbh->do(q{\n\t\tCREATE TABLE IF NOT EXISTS flow_events",
-        "AutoCommit => 1,\n\t\tsqlite_busy_timeout => 10000,\n\t});\n\n\t$dbh->do(q{PRAGMA busy_timeout = 10000});\n\t$dbh->do(q{PRAGMA journal_mode = WAL});\n\t$dbh->do(q{PRAGMA synchronous = NORMAL});\n\t$dbh->do(q{PRAGMA temp_store = MEMORY});\n\n\t$dbh->do(q{\n\t\tCREATE TABLE IF NOT EXISTS flow_events",
+        "AutoCommit => 1,\n\t\tsqlite_busy_timeout => 10000,\n\t});\n\n\tif ($flowdb_backend eq 'sqlite') {\n\t\t$dbh->do(q{PRAGMA busy_timeout = 10000});\n\t\t$dbh->do(q{PRAGMA journal_mode = WAL});\n\t\t$dbh->do(q{PRAGMA synchronous = NORMAL});\n\t\t$dbh->do(q{PRAGMA temp_store = MEMORY});\n\t}\n\n\t$dbh->do(q{\n\t\tCREATE TABLE IF NOT EXISTS flow_events",
     )
     text = replace_all(
         text,
@@ -536,7 +537,19 @@ sub cache_flow_record {
     text = replace_all(
         text,
         "AutoCommit => 0,\n\t});\n\n\tmy $sth = $dbh->prepare(q{",
-        "AutoCommit => 0,\n\t\tsqlite_busy_timeout => 10000,\n\t});\n\n\teval {\n\t\t$dbh->do(q{PRAGMA busy_timeout = 10000});\n\t\t$dbh->do(q{PRAGMA journal_mode = WAL});\n\t\t$dbh->do(q{PRAGMA synchronous = NORMAL});\n\n\t\tmy $sth = $dbh->prepare(q{",
+        "AutoCommit => 0,\n\t\tsqlite_busy_timeout => 10000,\n\t});\n\n\teval {\n\t\tif ($flowdb_backend eq 'sqlite') {\n\t\t\t$dbh->do(q{PRAGMA busy_timeout = 10000});\n\t\t\t$dbh->do(q{PRAGMA journal_mode = WAL});\n\t\t\t$dbh->do(q{PRAGMA synchronous = NORMAL});\n\t\t}\n\n\t\tmy $sth = $dbh->prepare(q{",
+    )
+
+    # Repair legacy patched collectors that still run SQLite PRAGMA on PostgreSQL.
+    text = replace_all(
+        text,
+        "\t$dbh->do(q{PRAGMA busy_timeout = 10000});\n\t$dbh->do(q{PRAGMA journal_mode = WAL});\n\t$dbh->do(q{PRAGMA synchronous = NORMAL});\n\t$dbh->do(q{PRAGMA temp_store = MEMORY});\n\n\t$dbh->do(q{\n\t\tCREATE TABLE IF NOT EXISTS flow_events",
+        "\tif ($flowdb_backend eq 'sqlite') {\n\t\t$dbh->do(q{PRAGMA busy_timeout = 10000});\n\t\t$dbh->do(q{PRAGMA journal_mode = WAL});\n\t\t$dbh->do(q{PRAGMA synchronous = NORMAL});\n\t\t$dbh->do(q{PRAGMA temp_store = MEMORY});\n\t}\n\n\t$dbh->do(q{\n\t\tCREATE TABLE IF NOT EXISTS flow_events",
+    )
+    text = replace_all(
+        text,
+        "\t\t$dbh->do(q{PRAGMA busy_timeout = 10000});\n\t\t$dbh->do(q{PRAGMA journal_mode = WAL});\n\t\t$dbh->do(q{PRAGMA synchronous = NORMAL});\n\n\t\tmy $sth = $dbh->prepare(q{",
+        "\t\tif ($flowdb_backend eq 'sqlite') {\n\t\t\t$dbh->do(q{PRAGMA busy_timeout = 10000});\n\t\t\t$dbh->do(q{PRAGMA journal_mode = WAL});\n\t\t\t$dbh->do(q{PRAGMA synchronous = NORMAL});\n\t\t}\n\n\t\tmy $sth = $dbh->prepare(q{",
     )
     text = replace_all(
         text,
@@ -620,21 +633,34 @@ sub cache_flow_record {
 """,
     )
 
-    # Guard against duplicated declaration block when patch is applied repeatedly.
-    decl_block = (
+    # Normalize and deduplicate flow DB globals (prevents "my variable masks earlier declaration").
+    canonical_decl = (
         "my $childrunning = 0;\n"
         "my $flowdbpath;\n"
         "my $flowdb_backend = $ENV{'ASSTATS_FLOW_BACKEND'} || 'sqlite';\n"
         "my $flowdb_dsn = $ENV{'ASSTATS_FLOW_DSN'} || '';\n"
         "my $flowdb_user = $ENV{'ASSTATS_FLOW_USER'} || '';\n"
         "my $flowdb_password = $ENV{'ASSTATS_FLOW_PASSWORD'} || '';\n"
-        "my $flowdb_retention_days = $ENV{'ASSTATS_FLOW_RETENTION_DAYS'} || 14;\n"
+        "my $flowdb_retention_days = 14;\n"
         "my $flowcache = {};\n"
-        "my $flowcache_lastcleanup = time;\n"
+        "my $flowcache_lastcleanup = 0;\n"
         "my $flowcache_cleanup_due = 0;\n"
     )
-    while decl_block + decl_block in text:
-        text = text.replace(decl_block + decl_block, decl_block, 1)
+    text = re.sub(
+        r"my \$childrunning = 0;\n"
+        r"(?:my \$flowdbpath;\n"
+        r"(?:my \$flowdb_backend = .*\n)?"
+        r"(?:my \$flowdb_dsn = .*\n)?"
+        r"(?:my \$flowdb_user = .*\n)?"
+        r"(?:my \$flowdb_password = .*\n)?"
+        r"my \$flowdb_retention_days = .*\n"
+        r"my \$flowcache = \{\};\n"
+        r"my \$flowcache_lastcleanup = .*\n"
+        r"my \$flowcache_cleanup_due = .*\n)+",
+        canonical_decl,
+        text,
+        count=1,
+    )
 
     target.write_text(text, encoding="utf-8")
 
