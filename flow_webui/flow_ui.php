@@ -534,6 +534,7 @@ function flow_render_as_row($rank, $as, $asinfo, $nbytes, $start, $end, $peerusa
             $quickLinks = '<div class="flow-quick-links">' . implode('', $linkItems) . '</div>';
         }
     }
+    $drillCta = '<a class="flow-drill-cta" href="' . htmlspecialchars($drillUrl) . '" title="Abrir consumo detalhado por IP para AS' . htmlspecialchars((string)$as) . '"><i class="fa fa-search-plus"></i><span>Abrir drilldown por IP</span></a>';
 
     $html = '<article class="flow-as-row">';
     $html .= '<div class="flow-as-meta">';
@@ -541,6 +542,7 @@ function flow_render_as_row($rank, $as, $asinfo, $nbytes, $start, $end, $peerusa
     $html .= '<div class="flow-as-title">' . $flag . '<strong>AS' . htmlspecialchars($as) . '</strong></div>';
     $html .= '<p>' . htmlspecialchars($asinfo['descr']) . '</p>';
     $html .= $quickLinks;
+    $html .= $drillCta;
     $html .= '<div class="flow-micro-metrics">';
     $html .= '<span>IPv4 IN total ' . htmlspecialchars(format_bytes($in4)) . '</span>';
     $html .= '<span>IPv4 OUT total ' . htmlspecialchars(format_bytes($out4)) . '</span>';

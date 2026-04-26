@@ -423,7 +423,7 @@ sub flush_flow_cache {
     text = replace_once(
         text,
         "\tif (!$ifalias) {\n\t\t# ignore this, as it's through an interface we don't monitor\n\t\treturn;\n\t}\n\t\n\tmy $dsname;\n",
-        "\tif (!$ifalias) {\n\t\t# ignore this, as it's through an interface we don't monitor\n\t\treturn;\n\t}\n\t\n\tif (!$peeras) {\n\t\tcache_flow_record($routerip, $ifalias, $direction, $ipversion, $srcip, $dstip, $srcas, $dstas, $type, $noctets);\n\t}\n\t\n\tmy $dsname;\n",
+        "\tif (!$ifalias) {\n\t\t# ignore this, as it's through an interface we don't monitor\n\t\treturn;\n\t}\n\t\n\tcache_flow_record($routerip, $ifalias, $direction, $ipversion, $srcip, $dstip, $srcas, $dstas, $type, $noctets);\n\t\n\tmy $dsname;\n",
         "flow cache hook",
     )
 
@@ -634,6 +634,11 @@ sub cache_flow_record {
     )
 
     # PostgreSQL: avoid ambiguous column references inside UPSERT update.
+    text = replace_all(
+        text,
+        "\tif (!$peeras) {\n\t\tcache_flow_record($routerip, $ifalias, $direction, $ipversion, $srcip, $dstip, $srcas, $dstas, $type, $noctets);\n\t}\n\t\n\tmy $dsname;\n",
+        "\tcache_flow_record($routerip, $ifalias, $direction, $ipversion, $srcip, $dstip, $srcas, $dstas, $type, $noctets);\n\t\n\tmy $dsname;\n",
+    )
     text = replace_all(
         text,
         "bytes = bytes + excluded.bytes,\n\t\t\t\tsamples = samples + excluded.samples,",
