@@ -226,6 +226,138 @@ function flow_bgp_he_exchange_members($slug) {
     return array_values($members);
 }
 
+function flow_ix_normalize_text($text) {
+    $text = trim((string)$text);
+    if ($text === '') {
+        return '';
+    }
+    $ascii = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $text);
+    if ($ascii !== false) {
+        $text = $ascii;
+    }
+    $text = strtolower($text);
+    $text = preg_replace('/[^a-z0-9]+/', ' ', $text);
+    return trim((string)$text);
+}
+
+function flow_ixbr_slug_catalog() {
+    $html = flow_http_fetch('https://ix.br/particip');
+    if ($html === '') {
+        return array();
+    }
+
+    $catalog = array();
+    if (preg_match_all('#<option[^>]*value=["\']?([^"\'>\s]+)["\']?[^>]*>(.*?)</option>#is', $html, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $match) {
+            $raw = trim(html_entity_decode($match[1], ENT_QUOTES, 'UTF-8'));
+            $label = trim(html_entity_decode(strip_tags($match[2]), ENT_QUOTES, 'UTF-8'));
+            if ($raw === '' || $label === '' || strtolower($raw) === 'select') {
+                continue;
+            }
+            $raw = trim($raw, '/');
+            $parts = explode('/', $raw);
+            $slug = strtolower(trim((string)end($parts)));
+            if ($slug === '' || !preg_match('/^[a-z0-9-]+$/', $slug)) {
+                continue;
+            }
+            $catalog[$slug] = array(
+                'slug' => $slug,
+                'label' => $label,
+                'normalized' => flow_ix_normalize_text($label),
+            );
+        }
+    }
+
+    return $catalog;
+}
+
+function flow_ix_guess_slug_from_name($ixName, $catalog) {
+    $normalizedName = flow_ix_normalize_text($ixName);
+    if ($normalizedName === '' || empty($catalog)) {
+        return '';
+    }
+
+    foreach ($catalog as $entry) {
+        if ($entry['normalized'] !== '' && strpos($normalizedName, $entry['normalized']) !== false) {
+            return $entry['slug'];
+        }
+    }
+
+    $cityMap = array(
+        'rio de janeiro' => 'rj',
+        'sao paulo' => 'sp',
+        'fortaleza' => 'ce',
+        'recife' => 'pe',
+        'porto alegre' => 'rs',
+        'curitiba' => 'pr',
+        'brasilia' => 'df',
+        'goiania' => 'go',
+        'belo horizonte' => 'mg',
+        'salvador' => 'ba',
+        'belem' => 'pa',
+        'manaus' => 'am',
+        'vitoria' => 'vix',
+    );
+
+    foreach ($cityMap as $city => $slug) {
+        if (strpos($normalizedName, $city) !== false) {
+            return isset($catalog[$slug]) ? $slug : '';
+        }
+    }
+
+    if (preg_match('/\b([a-z]{2,3})\b/', $normalizedName, $m)) {
+        $candidate = strtolower($m[1]);
+        if (isset($catalog[$candidate])) {
+            return $candidate;
+        }
+    }
+
+    return '';
+}
+
+function flow_ixbr_exchange_members_by_name($ixName, &$resolvedLabel = '') {
+    $resolvedLabel = '';
+    $catalog = flow_ixbr_slug_catalog();
+    if (empty($catalog)) {
+        return array();
+    }
+
+    $slug = flow_ix_guess_slug_from_name($ixName, $catalog);
+    if ($slug === '') {
+        return array();
+    }
+
+    $resolvedLabel = isset($catalog[$slug]) ? $catalog[$slug]['label'] : strtoupper($slug);
+    $html = flow_http_fetch('https://ix.br/particip/' . rawurlencode($slug));
+    if ($html === '') {
+        return array();
+    }
+
+    $members = array();
+    if (preg_match_all('/\bAS\s*([1-9][0-9]{1,9})\b/i', $html, $matches)) {
+        foreach ($matches[1] as $asnRaw) {
+            $asn = (int)$asnRaw;
+            if ($asn > 0 && $asn < 4294967295) {
+                $members[$asn] = $asn;
+            }
+        }
+    }
+    if (!empty($members)) {
+        return array_values($members);
+    }
+
+    if (preg_match_all('/(?:^|[^0-9])([1-9][0-9]{1,9})(?:[^0-9]|$)/m', strip_tags($html), $matches)) {
+        foreach ($matches[1] as $asnRaw) {
+            $asn = (int)$asnRaw;
+            if ($asn >= 32 && $asn <= 4294967294) {
+                $members[$asn] = $asn;
+            }
+        }
+    }
+
+    return array_values($members);
+}
+
 function flow_build_ix_catalog($myAsn, $peerdb) {
     $catalog = array();
 
@@ -258,21 +390,35 @@ function flow_build_ix_catalog($myAsn, $peerdb) {
     return array_values($catalog);
 }
 
-function flow_ix_members($ixKey, $peerdb) {
+function flow_ix_members($ixKey, $peerdb, $ixName = '') {
     $ixKey = trim((string)$ixKey);
     if ($ixKey === '') {
-        return array();
+        return array(array(), 'indefinido');
     }
 
     if (strpos($ixKey, 'bgphe:') === 0) {
-        return flow_bgp_he_exchange_members(substr($ixKey, 6));
+        $members = flow_bgp_he_exchange_members(substr($ixKey, 6));
+        if (!empty($members)) {
+            return array($members, 'bgp.he');
+        }
+
+        $ixbrLabel = '';
+        $ixbrMembers = flow_ixbr_exchange_members_by_name($ixName, $ixbrLabel);
+        if (!empty($ixbrMembers)) {
+            return array($ixbrMembers, 'ix.br/particip' . ($ixbrLabel !== '' ? ' (' . $ixbrLabel . ')' : ''));
+        }
+        return array(array(), 'bgp.he (sem membros)');
     }
 
     if (strpos($ixKey, 'pdb:') === 0 && $peerdb) {
-        return $peerdb->GetIXASN((int)substr($ixKey, 4));
+        $members = $peerdb->GetIXASN((int)substr($ixKey, 4));
+        if (!empty($members)) {
+            return array($members, 'PeeringDB');
+        }
+        return array(array(), 'PeeringDB (sem membros)');
     }
 
-    return array();
+    return array(array(), 'desconhecida');
 }
 
 function flow_ix_name_from_catalog($catalog, $ixKey) {
@@ -361,7 +507,10 @@ if ($query_asn) {
 }
 
 if ($ix_key !== '') {
-    $list_asn = flow_ix_members($ix_key, $peerdb);
+    list($list_asn, $membersSource) = flow_ix_members($ix_key, $peerdb, $ix_name);
+    if (!empty($membersSource) && strpos($membersSource, 'sem membros') === false) {
+        $ixSource = $membersSource;
+    }
     if (!empty($list_asn)) {
         $topas = getasstats_top($ntop, $statsfile, $selected_links, $list_asn);
         $start = time() - $hours * 3600;
@@ -379,8 +528,8 @@ if ($ix_key !== '') {
         }
     } else {
         $ixPanelTitle = 'IX sem membros retornados';
-        $ixEmptyTitle = 'bgp.he sem resposta util';
-        $ixEmptyBody = 'O IX foi selecionado, mas a consulta de membros nao retornou ASN para montar o ranking. A estrutura do bgp.he pode ter mudado ou esse IX nao expoe membros publicamente.';
+        $ixEmptyTitle = 'Fonte sem resposta util';
+        $ixEmptyBody = 'O IX foi selecionado, mas a consulta de membros nao retornou ASN para montar o ranking. Fontes testadas: bgp.he e fallback ix.br/particip.';
     }
 }
 
