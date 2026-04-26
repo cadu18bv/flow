@@ -748,6 +748,27 @@ case "${action}" in
     systemctl start asstats-extract.service || true
     echo "Coleta reiniciada e extrator acionado."
     ;;
+  knownlinks-write)
+    src_file="${2:-}"
+    if [[ -z "${src_file}" || ! -f "${src_file}" ]]; then
+      echo "Arquivo de entrada nao encontrado para knownlinks-write." >&2
+      exit 2
+    fi
+    tmp_file="$(mktemp "${PROJECT_DIR}/conf/knownlinks.tmp.XXXXXX")"
+    tr -d '\r' < "${src_file}" > "${tmp_file}"
+    if ! awk -F '\t' '
+      /^[[:space:]]*($|#)/ { next }
+      NF != 6 { printf "Linha %d invalida: esperado TAB com 6 colunas, recebido %d\n", NR, NF; invalid=1 }
+      END { exit invalid ? 1 : 0 }
+    ' "${tmp_file}"; then
+      rm -f "${tmp_file}"
+      exit 3
+    fi
+    mv "${tmp_file}" "${KNOWNLINKS_FILE}"
+    chown root:www-data "${KNOWNLINKS_FILE}" || true
+    chmod 0660 "${KNOWNLINKS_FILE}" || true
+    echo "knownlinks atualizado com sucesso."
+    ;;
   optimize-flow-db)
     systemctl stop asstatsd.service || true
     if [[ "${ASSTATS_FLOW_BACKEND:-sqlite}" == "pgsql" ]]; then
@@ -849,7 +870,7 @@ SQL
     fi
     ;;
   *)
-    echo "Uso: $0 {refresh-collection|optimize-flow-db|reset-collection|tail-collector-log|tail-extractor-log|tail-apache-log|validate-flow}" >&2
+    echo "Uso: $0 {refresh-collection|knownlinks-write|optimize-flow-db|reset-collection|tail-collector-log|tail-extractor-log|tail-apache-log|validate-flow}" >&2
     exit 1
     ;;
 esac

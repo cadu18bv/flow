@@ -36,10 +36,67 @@ function flow_read_knownlinks_text() {
     return is_file($path) ? (string)file_get_contents($path) : '';
 }
 
+function flow_set_knownlinks_write_error($message) {
+    $GLOBALS['flow_knownlinks_write_error'] = trim((string)$message);
+}
+
+function flow_knownlinks_write_error() {
+    return isset($GLOBALS['flow_knownlinks_write_error']) ? (string)$GLOBALS['flow_knownlinks_write_error'] : '';
+}
+
+function flow_write_knownlinks_via_helper($payload) {
+    $runtimeDir = flow_runtime_dir();
+    if (!is_dir($runtimeDir)) {
+        @mkdir($runtimeDir, 0770, true);
+    }
+
+    $tmp = @tempnam($runtimeDir, 'knownlinks-write-');
+    if ($tmp === false || $tmp === '') {
+        flow_set_knownlinks_write_error('Nao foi possivel criar arquivo temporario em ' . $runtimeDir);
+        return false;
+    }
+
+    if (@file_put_contents($tmp, $payload) === false) {
+        @unlink($tmp);
+        flow_set_knownlinks_write_error('Nao foi possivel gravar conteudo temporario para o helper.');
+        return false;
+    }
+
+    list($ok, $output) = flow_run_maintenance_action('knownlinks-write', array($tmp));
+    @unlink($tmp);
+
+    if (!$ok) {
+        flow_set_knownlinks_write_error($output !== '' ? $output : 'Falha ao gravar knownlinks via helper.');
+        return false;
+    }
+
+    flow_set_knownlinks_write_error('');
+    return true;
+}
+
 function flow_write_knownlinks_text($text) {
     $text = (string)$text;
     $text = str_replace(array("\r\n", "\r"), "\n", $text);
-    return @file_put_contents(flow_knownlinks_path(), rtrim($text) . "\n") !== false;
+    $payload = rtrim($text) . "\n";
+    $path = flow_knownlinks_path();
+
+    flow_set_knownlinks_write_error('');
+
+    if (@file_put_contents($path, $payload) !== false) {
+        return true;
+    }
+
+    if (flow_write_knownlinks_via_helper($payload)) {
+        return true;
+    }
+
+    if (flow_knownlinks_write_error() === '') {
+        $error = error_get_last();
+        $details = is_array($error) && isset($error['message']) ? (string)$error['message'] : '';
+        flow_set_knownlinks_write_error($details !== '' ? $details : 'Sem detalhes de erro.');
+    }
+
+    return false;
 }
 
 function flow_cdn_profiles_path() {
@@ -235,7 +292,8 @@ function flow_restore_knownlinks_backup($basename) {
 
     flow_backup_knownlinks_snapshot('pre-rollback');
     if (!flow_write_knownlinks_text($content)) {
-        return array(false, 'Nao foi possivel gravar o knownlinks restaurado. Verifique permissoes do arquivo.');
+        $details = flow_knownlinks_write_error();
+        return array(false, 'Nao foi possivel gravar o knownlinks restaurado. Verifique permissoes do arquivo.' . ($details !== '' ? ' | Detalhe: ' . $details : ''));
     }
     return array(true, $basename);
 }
@@ -244,21 +302,48 @@ function flow_maintenance_helper_path() {
     return '/usr/local/bin/flow-maintenance-helper.sh';
 }
 
-function flow_run_maintenance_action($action) {
+function flow_run_maintenance_action($action, $args = array()) {
     $helper = flow_maintenance_helper_path();
     if (!is_file($helper)) {
         return array(false, "Helper de manutencao nao encontrado em {$helper}");
     }
 
-    $allowed = array('refresh-collection', 'optimize-flow-db', 'reset-collection', 'tail-collector-log', 'tail-extractor-log', 'tail-apache-log', 'validate-flow');
-    if (!in_array($action, $allowed, true)) {
-        return array(false, 'Acao de manutencao invalida.');
+    if (!function_exists('exec')) {
+        return array(false, 'Funcao exec() indisponivel no PHP.');
     }
 
-    $command = 'sudo ' . escapeshellarg($helper) . ' ' . escapeshellarg($action) . ' 2>&1';
-    $output = shell_exec($command);
+    $allowed = array(
+        'refresh-collection' => 0,
+        'optimize-flow-db' => 0,
+        'reset-collection' => 0,
+        'tail-collector-log' => 0,
+        'tail-extractor-log' => 0,
+        'tail-apache-log' => 0,
+        'validate-flow' => 0,
+        'knownlinks-write' => 1,
+    );
+    if (!array_key_exists($action, $allowed)) {
+        return array(false, 'Acao de manutencao invalida.');
+    }
+    if (count((array)$args) !== $allowed[$action]) {
+        return array(false, 'Quantidade de argumentos invalida para a acao ' . $action . '.');
+    }
 
-    return array(true, trim((string)$output));
+    $command = 'sudo ' . escapeshellarg($helper) . ' ' . escapeshellarg($action);
+    foreach ((array)$args as $arg) {
+        $command .= ' ' . escapeshellarg((string)$arg);
+    }
+    $command .= ' 2>&1';
+
+    $lines = array();
+    $status = 0;
+    exec($command, $lines, $status);
+    $output = trim(implode("\n", $lines));
+    if ($status !== 0) {
+        return array(false, $output !== '' ? $output : 'Falha ao executar helper de manutencao.');
+    }
+
+    return array(true, $output);
 }
 
 function flow_knownlinks_entries() {
@@ -430,7 +515,8 @@ function flow_config_handle_post() {
             } else {
                 flow_backup_knownlinks_snapshot('save');
                 if (!flow_write_knownlinks_text($knownlinks)) {
-                    flow_auth_set_flash('Nao foi possivel gravar o knownlinks. Verifique permissao de escrita em ' . flow_knownlinks_path(), 'error');
+                    $details = flow_knownlinks_write_error();
+                    flow_auth_set_flash('Nao foi possivel gravar o knownlinks. Verifique permissao de escrita em ' . flow_knownlinks_path() . ($details !== '' ? ' | Detalhe: ' . $details : ''), 'error');
                 } else {
                     flow_run_maintenance_action('refresh-collection');
                     flow_auth_audit('config.knownlinks.updated', 'Arquivo knownlinks salvo pelo painel', 'knownlinks');
@@ -465,7 +551,8 @@ function flow_config_handle_post() {
             $next = $current === '' ? $line : ($current . PHP_EOL . $line);
             flow_backup_knownlinks_snapshot('append');
             if (!flow_write_knownlinks_text($next)) {
-                flow_auth_set_flash('Nao foi possivel adicionar o link. Verifique permissao de escrita em ' . flow_knownlinks_path(), 'error');
+                $details = flow_knownlinks_write_error();
+                flow_auth_set_flash('Nao foi possivel adicionar o link. Verifique permissao de escrita em ' . flow_knownlinks_path() . ($details !== '' ? ' | Detalhe: ' . $details : ''), 'error');
             } else {
                 flow_run_maintenance_action('refresh-collection');
                 flow_auth_audit('config.knownlinks.appended', 'Novo link anexado ao knownlinks', $payload['tag']);
